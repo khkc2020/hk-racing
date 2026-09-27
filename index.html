@@ -1,0 +1,218 @@
+<!DOCTYPE html>
+<html lang="zh-HK">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <title>HK Racing AI | 香港賽馬智能預測</title>
+  <!-- Tailwind CSS 樣式庫 -->
+  <script src="https://cdn.tailwindcss.com"></script>
+  <!-- Supabase JS Client -->
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+  <style>
+    body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
+    .hide-scrollbar::-webkit-scrollbar { display: none; }
+    .hide-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }
+  </style>
+</head>
+<body class="bg-slate-950 text-slate-100 min-h-screen pb-12">
+
+  <!-- 頂部標題列 -->
+  <header class="sticky top-0 z-50 bg-slate-900/90 backdrop-blur-md border-b border-slate-800 px-4 py-3 flex items-center justify-between">
+    <div>
+      <h1 class="text-lg font-bold tracking-tight text-white flex items-center gap-1.5">
+        🐎 <span>HK Racing AI</span>
+      </h1>
+      <p id="header-date" class="text-xs text-slate-400">正在讀取最新賽事...</p>
+    </div>
+    <span class="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-semibold bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">
+      ● AI 模型在線
+    </span>
+  </header>
+
+  <!-- 場次滑動選擇器 (R1 - R11) -->
+  <nav class="sticky top-[57px] z-40 bg-slate-950/95 backdrop-blur-sm border-b border-slate-800/80 px-2 py-2.5">
+    <div id="race-selector" class="flex gap-2 overflow-x-auto hide-scrollbar px-2">
+      <!-- 由 JS 動態生成場次按鈕 -->
+    </div>
+  </nav>
+
+  <!-- 賽事概覽卡片 -->
+  <main class="max-w-md mx-auto px-4 mt-4">
+    <div id="race-info" class="bg-gradient-to-r from-slate-900 to-slate-800/80 border border-slate-800 rounded-2xl p-4 shadow-lg mb-5">
+      <div class="flex justify-between items-center">
+        <div>
+          <span id="info-race-no" class="text-xl font-extrabold text-white">第 -- 場</span>
+          <span id="info-details" class="text-xs text-slate-400 ml-2">--</span>
+        </div>
+        <span id="info-venue" class="text-xs font-bold px-2 py-1 bg-blue-500/10 text-blue-400 border border-blue-500/20 rounded-lg">沙田</span>
+      </div>
+    </div>
+
+    <!-- AI 推薦標籤 -->
+    <div class="flex items-center justify-between mb-3 px-1">
+      <h2 class="text-sm font-semibold text-slate-300">AI 排序預測與機率</h2>
+      <span class="text-xs text-slate-500">按模型勝率排序</span>
+    </div>
+
+    <!-- 預測馬匹列表容器 -->
+    <div id="horses-list" class="space-y-3">
+      <!-- 載入中骨架畫面 -->
+      <div class="text-center py-12 text-slate-500 text-sm">
+        正在載入 AI 預測數據...
+      </div>
+    </div>
+  </main>
+
+  <script>
+    // ========================================================
+    // 1. 請填入你的 Supabase 網址與 PUBLISHABLE (ANON) KEY
+    // ========================================================
+    const SUPABASE_URL = "https://rxmkohhgznfcnhdqegwq.supabase.co";
+    const SUPABASE_ANON_KEY = "sb_publishable_Wdc026m3s8KrVT6JiTuWIw_NfzGx0of"; // 注意：這裡用公開的 anon key，安全又方便
+
+    const supabaseClient = supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+
+    let allRaces = [];
+    let currentRaceId = null;
+
+    async function initApp() {
+      try {
+        // 讀取所有賽事
+        const { data: races, error } = await supabaseClient
+          .from('races')
+          .select('*')
+          .order('race_date', { ascending: false })
+          .order('race_no', { ascending: true });
+
+        if (error || !races || races.length === 0) {
+          document.getElementById('horses-list').innerHTML = 
+            '<div class="text-center py-12 text-amber-400">目前尚無賽事數據，請先運行數據入庫。</div>';
+          return;
+        }
+
+        // 取出最新一個賽日
+        const latestDate = races[0].race_date;
+        allRaces = races.filter(r => r.race_date === latestDate);
+
+        document.getElementById('header-date').innerText = `賽事日期：${latestDate}`;
+
+        // 渲染場次按鈕
+        renderRaceSelector();
+
+        // 預設選取第 1 場
+        selectRace(allRaces[0].race_id);
+
+      } catch (err) {
+        console.error(err);
+        document.getElementById('horses-list').innerHTML = 
+          `<div class="text-center py-12 text-red-400">連線失敗: ${err.message}</div>`;
+      }
+    }
+
+    function renderRaceSelector() {
+      const container = document.getElementById('race-selector');
+      container.innerHTML = allRaces.map(r => `
+        <button onclick="selectRace('${r.race_id}')" 
+          id="btn-${r.race_id}"
+          class="race-btn flex-shrink-0 px-4 py-1.5 rounded-xl text-xs font-bold transition-all bg-slate-900 text-slate-400 border border-slate-800">
+          第 ${r.race_no} 場
+        </button>
+      `).join('');
+    }
+
+    async function selectRace(raceId) {
+      currentRaceId = raceId;
+      const race = allRaces.find(r => r.race_id === raceId);
+
+      // 更新按鈕高亮樣式
+      document.querySelectorAll('.race-btn').forEach(btn => {
+        btn.className = "race-btn flex-shrink-0 px-4 py-1.5 rounded-xl text-xs font-bold transition-all bg-slate-900 text-slate-400 border border-slate-800";
+      });
+      const activeBtn = document.getElementById(`btn-${raceId}`);
+      if (activeBtn) {
+        activeBtn.className = "race-btn flex-shrink-0 px-4 py-1.5 rounded-xl text-xs font-bold transition-all bg-blue-600 text-white shadow-md shadow-blue-500/20";
+      }
+
+      // 更新賽事資訊列
+      document.getElementById('info-race-no').innerText = `第 ${race.race_no} 場`;
+      document.getElementById('info-details').innerText = `${race.track_type || '草地'} • ${race.distance || '--'}米 • ${race.course ? race.course + '賽道' : ''}`;
+      document.getElementById('info-venue').innerText = race.venue === 'ST' ? '沙田' : '跑馬地';
+
+      // 讀取該場次的所有馬匹預測
+      document.getElementById('horses-list').innerHTML = '<div class="text-center py-8 text-slate-500 text-sm">正在計算各駒戰力...</div>';
+
+      const { data: preds, error } = await supabaseClient
+        .from('race_predictions')
+        .select('*')
+        .eq('race_id', raceId)
+        .order('predicted_rank', { ascending: true });
+
+      if (error || !preds || preds.length === 0) {
+        document.getElementById('horses-list').innerHTML = 
+          '<div class="text-center py-8 text-slate-500 text-sm">該場次暫無預測結果。</div>';
+        return;
+      }
+
+      renderHorses(preds);
+    }
+
+    function renderHorses(horses) {
+      const container = document.getElementById('horses-list');
+      container.innerHTML = horses.map(h => {
+        // 前 3 名獎牌標籤顏色
+        let rankBadge = `<span class="w-6 h-6 rounded-full bg-slate-800 text-slate-400 flex items-center justify-center text-xs font-bold">${h.predicted_rank}</span>`;
+        let borderHighlight = "border-slate-800/80";
+
+        if (h.predicted_rank === 1) {
+          rankBadge = `<span class="w-6 h-6 rounded-full bg-amber-500 text-slate-950 flex items-center justify-center text-xs font-black shadow-lg shadow-amber-500/30">1</span>`;
+          borderHighlight = "border-amber-500/40 bg-gradient-to-r from-amber-500/5 to-transparent";
+        } else if (h.predicted_rank === 2) {
+          rankBadge = `<span class="w-6 h-6 rounded-full bg-slate-300 text-slate-950 flex items-center justify-center text-xs font-bold">2</span>`;
+          borderHighlight = "border-slate-400/30";
+        } else if (h.predicted_rank === 3) {
+          rankBadge = `<span class="w-6 h-6 rounded-full bg-amber-700 text-amber-100 flex items-center justify-center text-xs font-bold">3</span>`;
+          borderHighlight = "border-amber-700/30";
+        }
+
+        const valueTag = h.is_value_bet 
+          ? `<span class="text-[10px] font-black px-1.5 py-0.5 rounded bg-rose-500/20 text-rose-400 border border-rose-500/30 animate-pulse">🔥 價值注項</span>` 
+          : '';
+
+        const oddsDisplay = h.market_odds ? `賠率 ${h.market_odds}` : '';
+
+        return `
+          <div class="bg-slate-900 border ${borderHighlight} rounded-2xl p-3.5 transition-all">
+            <div class="flex items-center justify-between mb-2">
+              <div class="flex items-center gap-2.5">
+                ${rankBadge}
+                <div>
+                  <div class="flex items-center gap-1.5">
+                    <span class="font-bold text-white text-base">${h.horse_name}</span>
+                    <span class="text-[11px] text-slate-500">(${h.horse_code})</span>
+                    ${valueTag}
+                  </div>
+                  <div class="text-xs text-slate-400 mt-0.5">
+                    騎師: <span class="text-slate-300 font-medium">${h.jockey || '--'}</span> • 
+                    檔位: <span class="text-slate-300 font-medium">${h.draw || '--'}檔</span>
+                  </div>
+                </div>
+              </div>
+              <div class="text-right">
+                <div class="text-base font-extrabold text-blue-400">${h.win_probability}%</div>
+                <div class="text-[10px] text-slate-500">${oddsDisplay}</div>
+              </div>
+            </div>
+            <!-- 機率進度條 -->
+            <div class="w-full bg-slate-800 rounded-full h-1.5 overflow-hidden">
+              <div class="bg-gradient-to-r from-blue-500 to-indigo-500 h-1.5 rounded-full" style="width: ${Math.min(h.win_probability * 2.5, 100)}%"></div>
+            </div>
+          </div>
+        `;
+      }).join('');
+    }
+
+    // 啟動應用
+    initApp();
+  </script>
+</body>
+</html>
