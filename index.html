@@ -12,7 +12,7 @@
 <body class="bg-slate-100 text-slate-800 min-h-screen">
   <div id="app" v-cloak class="max-w-4xl mx-auto px-3 sm:px-6 py-5">
     
-    <!-- 頂部標題與工具按鈕 -->
+    <!-- 頂部標題與按鈕 -->
     <header class="flex items-center justify-between pb-3 border-b border-slate-200">
       <div>
         <h1 class="text-xl sm:text-2xl font-black text-slate-900 flex items-center gap-1.5">
@@ -28,26 +28,25 @@
       </div>
     </header>
 
-    <!-- 1. 賽日切換列（自動分開沙田與跑馬地） -->
-    <div v-if="dateOptions.length > 0" class="mt-3 flex items-center gap-2 overflow-x-auto pb-1">
-      <span class="text-xs font-bold text-slate-400 whitespace-nowrap">選擇賽日：</span>
-      <button v-for="d in dateOptions" :key="d.date" @click="changeDate(d.date)"
-        :class="selectedDate === d.date ? 'bg-slate-900 text-white shadow-sm' : 'bg-white text-slate-700 border border-slate-200'"
-        class="px-3 py-1 rounded-lg text-xs font-bold whitespace-nowrap transition">
-        📅 {{ d.label }}
-      </button>
+    <!-- 最新賽事公告條（自動鎖定最新賽日與馬場） -->
+    <div v-if="latestInfo" class="mt-3 flex items-center justify-between bg-slate-900 text-white px-3.5 py-2 rounded-xl text-xs sm:text-sm font-bold shadow-sm">
+      <div class="flex items-center gap-2">
+        <span>📅 {{ latestInfo.date }}</span>
+        <span class="bg-amber-500 text-slate-950 px-2 py-0.5 rounded text-xs font-black">{{ latestInfo.venueName }}賽事</span>
+      </div>
+      <span class="text-xs text-slate-400 font-normal">全日共 {{ races.length }} 場</span>
     </div>
 
-    <!-- 2. 場次切換列（只顯示選中賽日的場次，杜絕重複） -->
+    <!-- 場次切換列（極致純淨：只展示當期第 1 場至最後一場） -->
     <div class="my-2.5 flex items-center gap-1.5 overflow-x-auto pb-1">
-      <button v-for="r in currentDayRaces" :key="r.race_id" @click="selectRace(r)"
+      <button v-for="r in races" :key="r.race_id" @click="selectRace(r)"
         :class="selectedRaceId === r.race_id ? 'bg-emerald-600 text-white shadow-sm' : 'bg-white text-slate-700 border border-slate-200'"
-        class="px-3 py-1.5 rounded-lg text-xs sm:text-sm font-bold whitespace-nowrap transition">
+        class="px-3.5 py-1.5 rounded-lg text-xs sm:text-sm font-bold whitespace-nowrap transition">
         第 {{ r.race_no }} 場
       </button>
     </div>
 
-    <!-- 3. 賽事概況卡片 -->
+    <!-- 當前場次概況卡片 -->
     <div v-if="currentRace" class="bg-white rounded-xl border border-slate-200 p-3.5 shadow-sm mb-3 flex items-center justify-between text-xs sm:text-sm">
       <div class="font-bold text-slate-900">
         <span class="bg-emerald-600 text-white px-2 py-0.5 rounded-full mr-1.5 text-xs">第 {{ currentRace.race_no }} 場</span>
@@ -58,7 +57,7 @@
       </div>
     </div>
 
-    <!-- 4. 馬匹預測排行榜 -->
+    <!-- 馬匹預測排行榜 -->
     <div v-if="predictions.length > 0" class="space-y-2.5">
       <div v-for="h in predictions" :key="h.horse_code"
         :class="h.predicted_rank === 1 ? 'border-amber-400 bg-amber-50/50 ring-1 ring-amber-300' : 'border-slate-200 bg-white'"
@@ -91,7 +90,7 @@
           </div>
         </div>
 
-        <!-- 智慧標籤與策略徽章 -->
+        <!-- 智慧標籤列 -->
         <div class="mt-2.5 flex flex-wrap items-center gap-1.5 pt-2 border-t border-slate-100">
           <span v-if="h.bet_strategy" class="bg-amber-100 text-amber-900 text-xs px-2 py-0.5 rounded-md font-bold">{{ h.bet_strategy }}</span>
           <span v-if="h.combo_synergy" class="bg-blue-50 text-blue-700 text-xs px-2 py-0.5 rounded-md font-semibold">🤝 騎練勝率 {{ h.combo_synergy }}%</span>
@@ -131,7 +130,6 @@
         const showSettings = ref(false);
         const loading = ref(false);
         const races = ref([]);
-        const selectedDate = ref('');
         const selectedRaceId = ref('');
         const predictions = ref([]);
         let sbClient = null;
@@ -151,47 +149,46 @@
           if (initSupabase()) loadRaces();
         };
 
-        // 提取所有獨立賽日（例如：2026-09-30 跑馬地、2026-09-27 沙田）
-        const dateOptions = computed(() => {
-          const map = new Map();
-          races.value.forEach(r => {
-            if (!map.has(r.race_date)) {
-              const vName = r.venue === 'ST' ? '沙田' : '跑馬地';
-              map.set(r.race_date, `${r.race_date} (${vName})`);
-            }
-          });
-          return Array.from(map.entries()).map(([date, label]) => ({ date, label }));
-        });
-
-        // 當前賽日的場次（按場次升序排列，不再重複）
-        const currentDayRaces = computed(() => {
-          if (!selectedDate.value) return [];
-          return races.value
-            .filter(r => r.race_date === selectedDate.value)
-            .sort((a,b) => a.race_no - b.race_no);
+        const latestInfo = computed(() => {
+          if (races.value.length === 0) return null;
+          const first = races.value[0];
+          return {
+            date: first.race_date,
+            venueName: first.venue === 'ST' ? '沙田' : '跑馬地'
+          };
         });
 
         const currentRace = computed(() => races.value.find(r => r.race_id === selectedRaceId.value) || null);
 
+        // 核心邏輯：自動鎖定最新賽日，只抓取該賽日的場次
         const loadRaces = async () => {
           if (!initSupabase()) return;
           loading.value = true;
           try {
-            const { data } = await sbClient.from('races').select('*').order('race_date', { ascending: false }).limit(30);
+            // 1. 先抓取最新一個賽事的日期
+            const { data: latestRow } = await sbClient
+              .from('races')
+              .select('race_date')
+              .order('race_date', { ascending: false })
+              .limit(1);
+
+            if (!latestRow || latestRow.length === 0) return;
+            const targetDate = latestRow[0].race_date;
+
+            // 2. 只抓取該最新賽日的所有場次
+            const { data } = await sbClient
+              .from('races')
+              .select('*')
+              .eq('race_date', targetDate)
+              .order('race_no', { ascending: true });
+
             races.value = data || [];
             if (races.value.length > 0) {
-              // 預設選中最新的賽事日期
-              selectedDate.value = races.value[0].race_date;
-              const firstRace = races.value.filter(r => r.race_date === selectedDate.value).sort((a,b) => a.race_no - b.race_no)[0];
-              if (firstRace) selectRace(firstRace);
+              selectRace(races.value[0]);
             }
-          } finally { loading.value = false; }
-        };
-
-        const changeDate = (dateStr) => {
-          selectedDate.value = dateStr;
-          const firstRace = races.value.filter(r => r.race_date === dateStr).sort((a,b) => a.race_no - b.race_no)[0];
-          if (firstRace) selectRace(firstRace);
+          } finally { 
+            loading.value = false; 
+          }
         };
 
         const selectRace = async (r) => {
@@ -199,9 +196,15 @@
           if (!sbClient) return;
           loading.value = true;
           try {
-            const { data } = await sbClient.from('race_predictions').select('*').eq('race_id', r.race_id).order('predicted_rank', { ascending: true });
+            const { data } = await sbClient
+              .from('race_predictions')
+              .select('*')
+              .eq('race_id', r.race_id)
+              .order('predicted_rank', { ascending: true });
             predictions.value = data || [];
-          } finally { loading.value = false; }
+          } finally { 
+            loading.value = false; 
+          }
         };
 
         onMounted(() => {
@@ -210,8 +213,8 @@
 
         return { 
           supabaseUrl, supabaseKey, showSettings, loading, 
-          dateOptions, selectedDate, currentDayRaces, currentRace, selectedRaceId, 
-          predictions, saveSettings, loadRaces, changeDate, selectRace 
+          races, latestInfo, currentRace, selectedRaceId, 
+          predictions, saveSettings, loadRaces, selectRace 
         };
       }
     }).mount('#app');
