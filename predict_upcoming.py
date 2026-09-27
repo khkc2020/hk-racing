@@ -1,7 +1,6 @@
 import os
 import re
 import time
-import datetime
 import requests
 import pandas as pd
 import numpy as np
@@ -114,12 +113,11 @@ def train_ranking_model():
     }
 
 def fetch_race_data(date_str, venue, race_no):
-    # 支援已公佈賽果頁與排位頁雙向抓取
     url_results = f"https://racing.hkjc.com/racing/information/Chinese/Racing/LocalResults.aspx?RaceDate={date_str}&Racecourse={venue}&RaceNo={race_no}"
     try:
         resp = requests.get(url_results, headers=HEADERS, timeout=12)
         if resp.status_code != 200: return None, []
-    except: return None, []
+    except Exception: return None, []
 
     resp.encoding = "utf-8"
     soup = BeautifulSoup(resp.text, "html.parser")
@@ -133,28 +131,37 @@ def fetch_race_data(date_str, venue, race_no):
     course = course_m.group(1) if course_m else None
 
     race_class = "第四班"
-    for c in ["第一班", "第二班", "第三班", "第四班", "第五班"]:
+    for c in ("第一班", "第二班", "第三班", "第四班", "第五班"):
         if c in race_text: race_class = c; break
 
     table = soup.find("table", class_="f_tac") or soup.find("table", class_="tableBorder2")
     if not table: return None, []
 
+    col_rank = 0
+    col_no = 1
+    col_name = 2
+    col_jockey = 3
+    col_trainer = 4
+    col_weight = 5
+    col_draw = 7
+
     horses = []
     for r in table.find_all("tr"):
         tds = [td.get_text().strip() for td in r.find_all("td")]
-        if len(tds) < 11 or not (tds[0].isdigit() or tds.isdigit()): continue
+        if len(tds) < 11: continue
+        if not (tds[col_rank].isdigit() or tds[col_no].isdigit()): continue
 
-        # LocalResults 格式：tds[0]名次, tds馬號, tds馬名(烙號), tds騎師, tds練馬師, tds負磅, tds[7]檔位
-        h_no = int(tds) if tds.isdigit() else int(tds[0])
-        raw_horse = tds
+        h_no = int(tds[col_no]) if tds[col_no].isdigit() else int(tds[col_rank])
+        raw_horse = tds[col_name]
         cm = re.search(r"\(([A-Z0-9]+)\)", raw_horse)
         h_code = cm.group(1) if cm else f"H{h_no}"
         h_name = re.sub(r"[\s\xa0]*\(.*?\)", "", raw_horse).strip()
 
-        wt = float(re.findall(r"\d+", tds)[0]) if re.findall(r"\d+", tds) else 120.0
-        jockey = tds
-        trainer = tds
-        draw = int(tds[7]) if tds[7].isdigit() else 7
+        wt_digits = re.findall(r"\d+", tds[col_weight])
+        wt = float(wt_digits[0]) if wt_digits else 120.0
+        jockey = tds[col_jockey]
+        trainer = tds[col_trainer]
+        draw = int(tds[col_draw]) if tds[col_draw].isdigit() else 7
 
         horses.append({
             "horse_no": h_no,
@@ -164,7 +171,7 @@ def fetch_race_data(date_str, venue, race_no):
             "jockey": jockey,
             "draw": draw,
             "trainer": trainer,
-            "rating": 60, # 預設評分基準
+            "rating": 60,
             "gear": "-",
             "gear_signals": parse_all_gear_signals("-")
         })
@@ -187,7 +194,6 @@ def run_upcoming():
 
         race_id = f"{target_date.replace('-', '')}_{venue}_{race_no:02d}"
 
-        # 1. 寫入賽事資訊
         supabase.table("races").upsert({
             "race_id": race_id, "race_date": target_date,
             "venue": meta["venue"], "race_no": race_no, "distance": meta["distance"],
@@ -195,7 +201,6 @@ def run_upcoming():
             "race_class": meta["race_class"]
         }).execute()
 
-        # 2. 機器學習特徵計算
         feats = []
         for h in horses:
             h_spd = ctx["horse_speed"].get(h["horse_code"], ctx["global_speed"])
@@ -225,7 +230,7 @@ def run_upcoming():
 
             scored.append({
                 "race_id": race_id,
-                "horse_no": h["horse_no"], # 真實馬號 (如 喜行=5, 機械騎士=1)
+                "horse_no": h["horse_no"], # 寫入真實馬號
                 "horse_code": h["horse_code"],
                 "horse_name": h["horse_name"],
                 "draw": h["draw"],
@@ -258,10 +263,10 @@ def run_upcoming():
                 "bet_strategy": strat
             })
 
-        # 🌟 關鍵修正：寫入前先清除該場舊資料，徹底杜絕重複與跨場混雜
+        # 寫入前先清除舊資料，確保第1至11場各自獨立不混淆
         supabase.table("race_predictions").delete().eq("race_id", race_id).execute()
         supabase.table("race_predictions").insert(final_payload).execute()
-        print(f"  ✓ 第 {race_no} 場真實馬匹已更新完畢 (出賽: {len(horses)} 匹)")
+        print(f"  ✓ 第 {race_no} 場完成 (出賽: {len(horses)} 匹)")
 
     print("\n🎉 成功！第 1 場至第 11 場各場獨立數據已全部恢復正常！")
 
