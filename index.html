@@ -4,9 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
   <title>HK Racing AI | 香港賽馬智能預測</title>
-  <!-- Tailwind CSS 樣式庫 -->
   <script src="https://cdn.tailwindcss.com"></script>
-  <!-- Supabase JS Client -->
   <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
   <style>
     body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
@@ -25,18 +23,16 @@
       <p id="header-date" class="text-xs text-slate-400">正在讀取最新賽事...</p>
     </div>
     <span class="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-semibold bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">
-      ● AI 模型在線
+      ● 多維度引擎
     </span>
   </header>
 
-  <!-- 場次滑動選擇器 (R1 - R11) -->
+  <!-- 場次滑動選擇器 -->
   <nav class="sticky top-[57px] z-40 bg-slate-950/95 backdrop-blur-sm border-b border-slate-800/80 px-2 py-2.5">
-    <div id="race-selector" class="flex gap-2 overflow-x-auto hide-scrollbar px-2">
-      <!-- 由 JS 動態生成場次按鈕 -->
-    </div>
+    <div id="race-selector" class="flex gap-2 overflow-x-auto hide-scrollbar px-2"></div>
   </nav>
 
-  <!-- 賽事概覽卡片 -->
+  <!-- 主內容容器 -->
   <main class="max-w-md mx-auto px-4 mt-4">
     <div id="race-info" class="bg-gradient-to-r from-slate-900 to-slate-800/80 border border-slate-800 rounded-2xl p-4 shadow-lg mb-5">
       <div class="flex justify-between items-center">
@@ -48,36 +44,26 @@
       </div>
     </div>
 
-    <!-- AI 推薦標籤 -->
     <div class="flex items-center justify-between mb-3 px-1">
-      <h2 class="text-sm font-semibold text-slate-300">AI 排序預測與機率</h2>
-      <span class="text-xs text-slate-500">按模型勝率排序</span>
+      <h2 class="text-sm font-semibold text-slate-300">AI 排序預測與多維度標籤</h2>
+      <span class="text-xs text-slate-500">按勝率排序</span>
     </div>
 
-    <!-- 預測馬匹列表容器 -->
+    <!-- 馬匹列表 -->
     <div id="horses-list" class="space-y-3">
-      <!-- 載入中骨架畫面 -->
-      <div class="text-center py-12 text-slate-500 text-sm">
-        正在載入 AI 預測數據...
-      </div>
+      <div class="text-center py-12 text-slate-500 text-sm">正在載入數據...</div>
     </div>
   </main>
 
   <script>
-    // ========================================================
-    // 1. 請填入你的 Supabase 網址與 PUBLISHABLE (ANON) KEY
-    // ========================================================
     const SUPABASE_URL = "https://rxmkohhgznfcnhdqegwq.supabase.co";
-    const SUPABASE_ANON_KEY = "sb_publishable_Wdc026m3s8KrVT6JiTuWIw_NfzGx0of"; // 注意：這裡用公開的 anon key，安全又方便
+    const SUPABASE_ANON_KEY = "填入你的publishable_anon_key";
 
     const supabaseClient = supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
-
     let allRaces = [];
-    let currentRaceId = null;
 
     async function initApp() {
       try {
-        // 讀取所有賽事
         const { data: races, error } = await supabaseClient
           .from('races')
           .select('*')
@@ -86,26 +72,18 @@
 
         if (error || !races || races.length === 0) {
           document.getElementById('horses-list').innerHTML = 
-            '<div class="text-center py-12 text-amber-400">目前尚無賽事數據，請先運行數據入庫。</div>';
+            '<div class="text-center py-12 text-amber-400">目前尚無賽事數據。</div>';
           return;
         }
 
-        // 取出最新一個賽日
         const latestDate = races[0].race_date;
         allRaces = races.filter(r => r.race_date === latestDate);
-
         document.getElementById('header-date').innerText = `賽事日期：${latestDate}`;
 
-        // 渲染場次按鈕
         renderRaceSelector();
-
-        // 預設選取第 1 場
         selectRace(allRaces[0].race_id);
-
       } catch (err) {
         console.error(err);
-        document.getElementById('horses-list').innerHTML = 
-          `<div class="text-center py-12 text-red-400">連線失敗: ${err.message}</div>`;
       }
     }
 
@@ -121,10 +99,7 @@
     }
 
     async function selectRace(raceId) {
-      currentRaceId = raceId;
       const race = allRaces.find(r => r.race_id === raceId);
-
-      // 更新按鈕高亮樣式
       document.querySelectorAll('.race-btn').forEach(btn => {
         btn.className = "race-btn flex-shrink-0 px-4 py-1.5 rounded-xl text-xs font-bold transition-all bg-slate-900 text-slate-400 border border-slate-800";
       });
@@ -133,13 +108,11 @@
         activeBtn.className = "race-btn flex-shrink-0 px-4 py-1.5 rounded-xl text-xs font-bold transition-all bg-blue-600 text-white shadow-md shadow-blue-500/20";
       }
 
-      // 更新賽事資訊列
       document.getElementById('info-race-no').innerText = `第 ${race.race_no} 場`;
       document.getElementById('info-details').innerText = `${race.track_type || '草地'} • ${race.distance || '--'}米 • ${race.course ? race.course + '賽道' : ''}`;
       document.getElementById('info-venue').innerText = race.venue === 'ST' ? '沙田' : '跑馬地';
 
-      // 讀取該場次的所有馬匹預測
-      document.getElementById('horses-list').innerHTML = '<div class="text-center py-8 text-slate-500 text-sm">正在計算各駒戰力...</div>';
+      document.getElementById('horses-list').innerHTML = '<div class="text-center py-8 text-slate-500 text-sm">正在分析各駒戰力...</div>';
 
       const { data: preds, error } = await supabaseClient
         .from('race_predictions')
@@ -148,8 +121,7 @@
         .order('predicted_rank', { ascending: true });
 
       if (error || !preds || preds.length === 0) {
-        document.getElementById('horses-list').innerHTML = 
-          '<div class="text-center py-8 text-slate-500 text-sm">該場次暫無預測結果。</div>';
+        document.getElementById('horses-list').innerHTML = '<div class="text-center py-8 text-slate-500 text-sm">暫無預測結果。</div>';
         return;
       }
 
@@ -159,7 +131,6 @@
     function renderHorses(horses) {
       const container = document.getElementById('horses-list');
       container.innerHTML = horses.map(h => {
-        // 前 3 名獎牌標籤顏色
         let rankBadge = `<span class="w-6 h-6 rounded-full bg-slate-800 text-slate-400 flex items-center justify-center text-xs font-bold">${h.predicted_rank}</span>`;
         let borderHighlight = "border-slate-800/80";
 
@@ -178,10 +149,22 @@
           ? `<span class="text-[10px] font-black px-1.5 py-0.5 rounded bg-rose-500/20 text-rose-400 border border-rose-500/30 animate-pulse">🔥 價值注項</span>` 
           : '';
 
+        // 渲染智能彩色標籤
+        let smartBadgesHtml = '';
+        if (h.smart_tags && Array.isArray(h.smart_tags)) {
+          smartBadgesHtml = h.smart_tags.map(t => {
+            let color = "bg-slate-800 text-slate-400 border-slate-700";
+            if (t.includes("內檔") || t.includes("頭選")) color = "bg-amber-500/10 text-amber-300 border-amber-500/20";
+            if (t.includes("體力") || t.includes("狀態")) color = "bg-emerald-500/10 text-emerald-300 border-emerald-500/20";
+            if (t.includes("外檔")) color = "bg-rose-500/10 text-rose-300 border-rose-500/20";
+            return `<span class="text-[10px] px-1.5 py-0.5 rounded border ${color}">${t}</span>`;
+          }).join(' ');
+        }
+
         const oddsDisplay = h.market_odds ? `賠率 ${h.market_odds}` : '';
 
         return `
-          <div class="bg-slate-900 border ${borderHighlight} rounded-2xl p-3.5 transition-all">
+          <div class="bg-slate-900 border ${borderHighlight} rounded-2xl p-3.5 transition-all shadow-sm">
             <div class="flex items-center justify-between mb-2">
               <div class="flex items-center gap-2.5">
                 ${rankBadge}
@@ -202,8 +185,12 @@
                 <div class="text-[10px] text-slate-500">${oddsDisplay}</div>
               </div>
             </div>
+            
+            <!-- 智能標籤區塊 -->
+            ${smartBadgesHtml ? `<div class="flex flex-wrap gap-1.5 my-2">${smartBadgesHtml}</div>` : ''}
+
             <!-- 機率進度條 -->
-            <div class="w-full bg-slate-800 rounded-full h-1.5 overflow-hidden">
+            <div class="w-full bg-slate-800 rounded-full h-1.5 overflow-hidden mt-1">
               <div class="bg-gradient-to-r from-blue-500 to-indigo-500 h-1.5 rounded-full" style="width: ${Math.min(h.win_probability * 2.5, 100)}%"></div>
             </div>
           </div>
@@ -211,7 +198,6 @@
       }).join('');
     }
 
-    // 啟動應用
     initApp();
   </script>
 </body>
