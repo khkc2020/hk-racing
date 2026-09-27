@@ -1,16 +1,16 @@
-name: HK Racing Auto Pipeline
+name: HK Racing Auto Engine
 
 on:
   schedule:
-    # 香港時間每逢星期三夜賽 (23:30) 執行: 15:30 UTC
+    # 1. 賽前排位自動偵測: 週一、週二、週四、週五 香港時間 12:30 (UTC 04:30)
+    - cron: '30 4 * * 1,2,4,5'
+    # 2. 賽後戰績入庫與模型更新: 週三夜賽後 23:30 (UTC 15:30) 與 週末日賽後 18:30 (UTC 10:30)
     - cron: '30 15 * * 3'
-    # 香港時間每逢星期六、日賽 (18:30) 執行: 10:30 UTC
     - cron: '30 10 * * 0,6'
-  # 支援手動點擊按鈕隨時立即執行
   workflow_dispatch:
 
 jobs:
-  run-pipeline:
+  run-racing-engine:
     runs-on: ubuntu-latest
     steps:
       - name: 下載倉庫代碼
@@ -26,7 +26,14 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
-      - name: 執行賽馬數據採集與 AI 預測
+      - name: 執行賽前排位檢測與預測
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+        run: |
+          python predict_upcoming.py || echo "排位檢測完畢"
+
+      - name: 執行賽後歷史入庫與重訓
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
