@@ -12,8 +12,8 @@
 <body class="bg-slate-100 text-slate-800 min-h-screen">
   <div id="app" v-cloak class="max-w-4xl mx-auto px-3 sm:px-6 py-5">
     
-    <!-- 頂部標題與按鈕 -->
-    <header class="flex items-center justify-between pb-4 border-b border-slate-200">
+    <!-- 頂部標題與工具按鈕 -->
+    <header class="flex items-center justify-between pb-3 border-b border-slate-200">
       <div>
         <h1 class="text-xl sm:text-2xl font-black text-slate-900 flex items-center gap-1.5">
           <span>🏇</span> 香港賽馬 AI 看盤系統
@@ -28,19 +28,26 @@
       </div>
     </header>
 
-    <!-- 賽日與場次切換列 -->
-    <div class="my-3 flex items-center gap-1.5 overflow-x-auto pb-1">
+    <!-- 1. 賽日切換列（自動分開沙田與跑馬地） -->
+    <div v-if="dateOptions.length > 0" class="mt-3 flex items-center gap-2 overflow-x-auto pb-1">
+      <span class="text-xs font-bold text-slate-400 whitespace-nowrap">選擇賽日：</span>
+      <button v-for="d in dateOptions" :key="d.date" @click="changeDate(d.date)"
+        :class="selectedDate === d.date ? 'bg-slate-900 text-white shadow-sm' : 'bg-white text-slate-700 border border-slate-200'"
+        class="px-3 py-1 rounded-lg text-xs font-bold whitespace-nowrap transition">
+        📅 {{ d.label }}
+      </button>
+    </div>
+
+    <!-- 2. 場次切換列（只顯示選中賽日的場次，杜絕重複） -->
+    <div class="my-2.5 flex items-center gap-1.5 overflow-x-auto pb-1">
       <button v-for="r in currentDayRaces" :key="r.race_id" @click="selectRace(r)"
         :class="selectedRaceId === r.race_id ? 'bg-emerald-600 text-white shadow-sm' : 'bg-white text-slate-700 border border-slate-200'"
         class="px-3 py-1.5 rounded-lg text-xs sm:text-sm font-bold whitespace-nowrap transition">
         第 {{ r.race_no }} 場
       </button>
-      <button v-if="currentDayRaces.length === 0" @click="loadDemoData" class="bg-amber-100 text-amber-800 border border-amber-300 px-3 py-1.5 rounded-lg text-xs font-bold">
-        🎲 點此載入示範排位預覽
-      </button>
     </div>
 
-    <!-- 賽事概況卡片 -->
+    <!-- 3. 賽事概況卡片 -->
     <div v-if="currentRace" class="bg-white rounded-xl border border-slate-200 p-3.5 shadow-sm mb-3 flex items-center justify-between text-xs sm:text-sm">
       <div class="font-bold text-slate-900">
         <span class="bg-emerald-600 text-white px-2 py-0.5 rounded-full mr-1.5 text-xs">第 {{ currentRace.race_no }} 場</span>
@@ -51,7 +58,7 @@
       </div>
     </div>
 
-    <!-- 馬匹預測排行榜 -->
+    <!-- 4. 馬匹預測排行榜 -->
     <div v-if="predictions.length > 0" class="space-y-2.5">
       <div v-for="h in predictions" :key="h.horse_code"
         :class="h.predicted_rank === 1 ? 'border-amber-400 bg-amber-50/50 ring-1 ring-amber-300' : 'border-slate-200 bg-white'"
@@ -84,7 +91,7 @@
           </div>
         </div>
 
-        <!-- 智慧標籤列 -->
+        <!-- 智慧標籤與策略徽章 -->
         <div class="mt-2.5 flex flex-wrap items-center gap-1.5 pt-2 border-t border-slate-100">
           <span v-if="h.bet_strategy" class="bg-amber-100 text-amber-900 text-xs px-2 py-0.5 rounded-md font-bold">{{ h.bet_strategy }}</span>
           <span v-if="h.combo_synergy" class="bg-blue-50 text-blue-700 text-xs px-2 py-0.5 rounded-md font-semibold">🤝 騎練勝率 {{ h.combo_synergy }}%</span>
@@ -124,6 +131,7 @@
         const showSettings = ref(false);
         const loading = ref(false);
         const races = ref([]);
+        const selectedDate = ref('');
         const selectedRaceId = ref('');
         const predictions = ref([]);
         let sbClient = null;
@@ -143,17 +151,47 @@
           if (initSupabase()) loadRaces();
         };
 
-        const currentDayRaces = computed(() => races.value.sort((a,b) => a.race_no - b.race_no));
+        // 提取所有獨立賽日（例如：2026-09-30 跑馬地、2026-09-27 沙田）
+        const dateOptions = computed(() => {
+          const map = new Map();
+          races.value.forEach(r => {
+            if (!map.has(r.race_date)) {
+              const vName = r.venue === 'ST' ? '沙田' : '跑馬地';
+              map.set(r.race_date, `${r.race_date} (${vName})`);
+            }
+          });
+          return Array.from(map.entries()).map(([date, label]) => ({ date, label }));
+        });
+
+        // 當前賽日的場次（按場次升序排列，不再重複）
+        const currentDayRaces = computed(() => {
+          if (!selectedDate.value) return [];
+          return races.value
+            .filter(r => r.race_date === selectedDate.value)
+            .sort((a,b) => a.race_no - b.race_no);
+        });
+
         const currentRace = computed(() => races.value.find(r => r.race_id === selectedRaceId.value) || null);
 
         const loadRaces = async () => {
           if (!initSupabase()) return;
           loading.value = true;
           try {
-            const { data } = await sbClient.from('races').select('*').order('race_date', { ascending: false }).limit(15);
+            const { data } = await sbClient.from('races').select('*').order('race_date', { ascending: false }).limit(30);
             races.value = data || [];
-            if (races.value.length > 0) selectRace(races.value[0]);
+            if (races.value.length > 0) {
+              // 預設選中最新的賽事日期
+              selectedDate.value = races.value[0].race_date;
+              const firstRace = races.value.filter(r => r.race_date === selectedDate.value).sort((a,b) => a.race_no - b.race_no)[0];
+              if (firstRace) selectRace(firstRace);
+            }
           } finally { loading.value = false; }
+        };
+
+        const changeDate = (dateStr) => {
+          selectedDate.value = dateStr;
+          const firstRace = races.value.filter(r => r.race_date === dateStr).sort((a,b) => a.race_no - b.race_no)[0];
+          if (firstRace) selectRace(firstRace);
         };
 
         const selectRace = async (r) => {
@@ -166,21 +204,15 @@
           } finally { loading.value = false; }
         };
 
-        const loadDemoData = () => {
-          races.value = [{ race_id: 'demo_01', race_no: 1, venue: 'HV', race_class: '第四班', distance: 1200, track_type: '草地', course: 'A' }];
-          selectedRaceId.value = 'demo_01';
-          predictions.value = [
-            { horse_name: '超霸勝', horse_code: 'H128', draw: 2, jockey: '潘頓', rating: 60, gear: 'B1/TT', win_probability: 32.5, predicted_rank: 1, bet_strategy: '🎯 獨贏首選 / 連贏馬膽', combo_synergy: 38.2, smart_tags: ['👑 AI頭選', '👓 首次眼罩 (B1大變革)', '👅 繫舌帶', '🎯 黃金內檔'] },
-            { horse_name: '快步速', horse_code: 'J045', draw: 4, jockey: '何澤堯', rating: 58, gear: 'TT', win_probability: 21.0, predicted_rank: 2, bet_strategy: '⚡ 次選主力', combo_synergy: 29.5, smart_tags: ['⚡ 主力爭位', '👅 繫舌帶'] }
-          ];
-        };
-
         onMounted(() => {
           if (initSupabase()) loadRaces();
-          else loadDemoData();
         });
 
-        return { supabaseUrl, supabaseKey, showSettings, loading, currentDayRaces, currentRace, selectedRaceId, predictions, saveSettings, loadRaces, selectRace, loadDemoData };
+        return { 
+          supabaseUrl, supabaseKey, showSettings, loading, 
+          dateOptions, selectedDate, currentDayRaces, currentRace, selectedRaceId, 
+          predictions, saveSettings, loadRaces, changeDate, selectRace 
+        };
       }
     }).mount('#app');
   </script>
