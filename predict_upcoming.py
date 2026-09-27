@@ -113,11 +113,24 @@ def train_ranking_model():
     }
 
 def fetch_race_data(date_str, venue, race_no):
-    url_results = f"https://racing.hkjc.com/racing/information/Chinese/Racing/LocalResults.aspx?RaceDate={date_str}&Racecourse={venue}&RaceNo={race_no}"
-    try:
-        resp = requests.get(url_results, headers=HEADERS, timeout=12)
-        if resp.status_code != 200: return None, []
-    except Exception: return None, []
+    # 優先從包含官方評分與配備的排位表 (RaceCard) 抓取
+    urls = [
+        f"https://racing.hkjc.com/racing/information/Chinese/Racing/RaceCard.aspx?RaceDate={date_str}&Racecourse={venue}&RaceNo={race_no}",
+        f"https://racing.hkjc.com/racing/information/Chinese/racing/RaceCard.aspx?RaceDate={date_str}&Racecourse={venue}&RaceNo={race_no}",
+        f"https://racing.hkjc.com/racing/information/Chinese/Racing/LocalResults.aspx?RaceDate={date_str}&Racecourse={venue}&RaceNo={race_no}"
+    ]
+
+    resp = None
+    for u in urls:
+        try:
+            r = requests.get(u, headers=HEADERS, timeout=10)
+            if r.status_code == 200 and ("馬名" in r.text or "騎師" in r.text):
+                resp = r
+                break
+        except Exception:
+            continue
+
+    if not resp: return None, []
 
     resp.encoding = "utf-8"
     soup = BeautifulSoup(resp.text, "html.parser")
@@ -134,34 +147,73 @@ def fetch_race_data(date_str, venue, race_no):
     for c in ("第一班", "第二班", "第三班", "第四班", "第五班"):
         if c in race_text: race_class = c; break
 
-    table = soup.find("table", class_="f_tac") or soup.find("table", class_="tableBorder2")
-    if not table: return None, []
+    target_table = None
+    header_tr = None
+    for tb in soup.find_all("table"):
+        for r in tb.find_all("tr"):
+            t = r.get_text()
+            if "馬名" in t and ("評分" in t or "騎師" in t):
+                target_table = tb
+                header_tr = r
+                break
+        if target_table: break
 
-    col_rank = 0
-    col_no = 1
-    col_name = 2
-    col_jockey = 3
-    col_trainer = 4
-    col_weight = 5
-    col_draw = 7
+    if not target_table: return None, []
+
+    headers = [th.get_text().strip() for th in header_tr.find_all(["th", "td"])]
+    h_idx = {}
+    for i, h in enumerate(headers):
+        hl = h.lower().strip()
+        if ("馬號" in h or "馬匹編號" in h or hl == "no.") and "horse_no" not in h_idx: h_idx["horse_no"] = i
+        elif "馬名" in h and "綵衣" not in h and "horse_name" not in h_idx: h_idx["horse_name"] = i
+        elif "負磅" in h and "+/-" not in h and "weight" not in h_idx: h_idx["weight"] = i
+        elif "騎師" in h and "jockey" not in h_idx: h_idx["jockey"] = i
+        elif "檔位" in h and "draw" not in h_idx: h_idx["draw"] = i
+        elif "練馬師" in h and "trainer" not in h_idx: h_idx["trainer"] = i
+        elif "評分" in h and "國際" not in h and "+/-" not in h and "rating" not in h_idx: h_idx["rating"] = i
+        elif "配備" in h and "gear" not in h_idx: h_idx["gear"] = i
 
     horses = []
-    for r in table.find_all("tr"):
-        tds = [td.get_text().strip() for td in r.find_all("td")]
-        if len(tds) < 11: continue
-        if not (tds[col_rank].isdigit() or tds[col_no].isdigit()): continue
+    passed = False
+    for r in target_table.find_all("tr"):
+        if r == header_tr:
+            passed = True
+            continue
+        if not passed: continue
 
-        h_no = int(tds[col_no]) if tds[col_no].isdigit() else int(tds[col_rank])
-        raw_horse = tds[col_name]
+        tds = [td.get_text().strip() for td in r.find_all(["td", "th"])]
+        if not tds: continue
+
+        h_no = None
+        if "horse_no" in h_idx and len(tds) > h_idx["horse_no"] and tds[h_idx["horse_no"]].isdigit():
+            h_no = int(tds[h_idx["horse_no"]])
+        elif len(tds) > 1 and tds.isdigit():
+            h_no = int(tds)
+        elif len(tds) > 0 and tds[0].isdigit():
+            h_no = int(tds[0])
+
+        if h_no is None: continue
+
+        raw_horse = tds[h_idx["horse_name"]] if "horse_name" in h_idx and len(tds) > h_idx["horse_name"] else (tds if len(tds) > 2 else "")
         cm = re.search(r"\(([A-Z0-9]+)\)", raw_horse)
         h_code = cm.group(1) if cm else f"H{h_no}"
         h_name = re.sub(r"[\s\xa0]*\(.*?\)", "", raw_horse).strip()
 
-        wt_digits = re.findall(r"\d+", tds[col_weight])
-        wt = float(wt_digits[0]) if wt_digits else 120.0
-        jockey = tds[col_jockey]
-        trainer = tds[col_trainer]
-        draw = int(tds[col_draw]) if tds[col_draw].isdigit() else 7
+        wt = float(re.findall(r"\d+", tds[h_idx["weight"]])[0]) if "weight" in h_idx and len(tds) > h_idx["weight"] and re.findall(r"\d+", tds[h_idx["weight"]]) else 120.0
+        jockey = tds[h_idx["jockey"]] if "jockey" in h_idx and len(tds) > h_idx["jockey"] else (tds if len(tds) > 3 else "")
+        trainer = tds[h_idx["trainer"]] if "trainer" in h_idx and len(tds) > h_idx["trainer"] else (tds if len(tds) > 4 else "")
+        draw = int(tds[h_idx["draw"]]) if "draw" in h_idx and len(tds) > h_idx["draw"] and tds[h_idx["draw"]].isdigit() else 7
+
+        # 🌟 精準提取官方真實評分 (例如 30, 39, 36)
+        rating = None
+        if "rating" in h_idx and len(tds) > h_idx["rating"] and re.findall(r"\d+", tds[h_idx["rating"]]):
+            rating = int(re.findall(r"\d+", tds[h_idx["rating"]])[0])
+
+        # 🌟 精準提取官方配備 (例如 BT, V, B2T)
+        gear = tds[h_idx["gear"]] if "gear" in h_idx and len(tds) > h_idx["gear"] else "-"
+        if not gear or gear in ("--", "-"): gear = "-"
+
+        gear_signals = parse_all_gear_signals(gear)
 
         horses.append({
             "horse_no": h_no,
@@ -171,9 +223,9 @@ def fetch_race_data(date_str, venue, race_no):
             "jockey": jockey,
             "draw": draw,
             "trainer": trainer,
-            "rating": 60,
-            "gear": "-",
-            "gear_signals": parse_all_gear_signals("-")
+            "rating": rating,
+            "gear": gear,
+            "gear_signals": gear_signals
         })
 
     meta = {"venue": venue, "distance": distance, "track_type": track, "course": course, "race_class": race_class}
@@ -214,61 +266,165 @@ def run_upcoming():
             })
 
         feat_df = pd.DataFrame(feats)
-        feat_df["weight_vs_race_avg"] = feat_df["actual_weight"] - feat_df["actual_weight"].mean()
-        feat_df["speed_vs_race_avg"] = feat_df["horse_avg_speed"] - feat_df["horse_avg_speed"].mean()
+        feat_df["weight_vs_race_avg"] = feat以下為精簡核心版 `predict_upcoming.py`，完整支援**真實馬號、真實評分與官方配備**，並修正場次獨立性：
 
-        scores = model.predict(feat_df[ctx["features"]])
+```python
+import os, re, time, requests, numpy as np, pandas as pd
+from bs4 import BeautifulSoup
+from supabase import create_client
+import lightgbm as lgb
+
+SUPABASE_URL = os.environ.get("SUPABASE_URL")
+SUPABASE_KEY = os.environ.get("SUPABASE_KEY")
+supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
+HEADERS = {"User-Agent": "Mozilla/5.0"}
+
+def parse_gear(g):
+    if not g or g == "-": return [], 0.0
+    t, b, gu = [], 0.0, g.upper()
+    if re.search(r"B1|V1|PC1|P1", gu): t.append("👓 初戴眼罩"); b += 0.2
+    elif re.search(r"\bB\b|\bV\b", gu): t.append("👓 戴眼罩"); b += 0.05
+    if "TT" in gu: t.append("👅 繫舌帶"); b += 0.05
+    if "XB" in gu: t.append("🦺 交叉鼻箍")
+    return t, b
+
+def train_model():
+    res = supabase.table("race_results").select("race_id,place_num,horse_code,jockey,trainer,actual_weight,draw,speed_mps").limit(5000).execute()
+    df = pd.DataFrame(res.data)
+    df["is_win"] = (df["place_num"] == 1).astype(int)
+    df["pair"] = df["jockey"] + "_" + df["trainer"]
+    p_dict = df.groupby("pair")["is_win"].mean().to_dict()
+    j_dict = df.groupby("jockey")["is_win"].mean().to_dict()
+    t_dict = df.groupby("trainer")["is_win"].mean().to_dict()
+    s_dict = df.groupby("horse_code")["speed_mps"].mean().to_dict()
+    g_spd = df["speed_mps"].mean() or 17.0
+
+    df["speed"] = df["horse_code"].map(s_dict).fillna(g_spd)
+    df["j_rt"] = df["jockey"].map(j_dict).fillna(0.08)
+    df["t_rt"] = df["trainer"].map(t_dict).fillna(0.08)
+    df["syn"] = df["pair"].map(p_dict).fillna(0.08)
+    df["draw"] = df["draw"].fillna(7)
+    df["weight"] = df["actual_weight"].fillna(120)
+
+    means = df.groupby("race_id")[["weight", "speed"]].transform("mean")
+    df["d_wt"] = df["weight"] - means["weight"]
+    df["d_sp"] = df["speed"] - means["speed"]
+
+    df["target"] = df["place_num"].map(lambda p: 3 if p==1 else (2 if p==2 else (1 if p==3 else 0)))
+    cols = ["draw", "weight", "speed", "j_rt", "t_rt", "syn", "d_sp", "d_wt"]
+    ranker = lgb.LGBMRanker(objective="lambdarank", n_estimators=60, learning_rate=0.05, random_state=42)
+    ranker.fit(df[cols], df["target"], group=df.groupby("race_id", sort=False).size().values)
+    return {"m": ranker, "c": cols, "j": j_dict, "t": t_dict, "p": p_dict, "s": s_dict, "gs": g_spd}
+
+def fetch_race(date_str, v, r_no):
+    url = f"[https://racing.hkjc.com/racing/information/Chinese/Racing/RaceCard.aspx?RaceDate=](https://racing.hkjc.com/racing/information/Chinese/Racing/RaceCard.aspx?RaceDate=){date_str}&Racecourse={v}&RaceNo={r_no}"
+    try:
+        r = requests.get(url, headers=HEADERS, timeout=10)
+        if r.status_code != 200 or "馬名" not in r.text: return None, []
+    except Exception: return None, []
+
+    soup = BeautifulSoup(r.text, "html.parser")
+    dist_m = re.search(r"(\d{3,4})米", soup.text)
+    dist = int(dist_m.group(1)) if dist_m else 1200
+    track = "全天候" if "全天候" in soup.text else "草地"
+
+    tbl, h_tr = None, None
+    for t in soup.find_all("table"):
+        for tr in t.find_all("tr"):
+            if "馬名" in tr.text and ("評分" in tr.text or "負磅" in tr.text):
+                tbl, h_tr = t, tr; break
+        if tbl: break
+    if not tbl: return None, []
+
+    headers = [th.text.strip() for th in h_tr.find_all(["th", "td"])]
+    idx = {}
+    for i, h in enumerate(headers):
+        hl = h.lower()
+        if ("馬號" in h or "編號" in h or hl=="no.") and "no" not in idx: idx["no"] = i
+        elif "馬名" in h and "name" not in idx: idx["name"] = i
+        elif "負磅" in h and "+/-" not in h and "wt" not in idx: idx["wt"] = i
+        elif "騎師" in h and "jk" not in idx: idx["jk"] = i
+        elif "檔位" in h and "dr" not in idx: idx["dr"] = i
+        elif "練馬師" in h and "tr" not in idx: idx["tr"] = i
+        elif "評分" in h and "國際" not in h and "+/-" not in h and "rt" not in idx: idx["rt"] = i
+        elif "配備" in h and "gr" not in idx: idx["gr"] = i
+
+    horses = []
+    passed = False
+    for tr in tbl.find_all("tr"):
+        if tr == h_tr: passed = True; continue
+        if not passed: continue
+        tds = [td.text.strip() for td in tr.find_all(["td", "th"])]
+        if not tds or "no" not in idx or len(tds) <= idx["no"] or not tds[idx["no"]].isdigit(): continue
+
+        raw_h = tds[idx["name"]] if "name" in idx else ""
+        cm = re.search(r"\(([A-Z0-9]+)\)", raw_h)
+        h_code = cm.group(1) if cm else f"H{tds[idx['no']]}"
+        h_name = re.sub(r"[\s\xa0]*\(.*?\)", "", raw_h).strip()
+
+        rt = int(re.findall(r"\d+", tds[idx["rt"]])[0]) if "rt" in idx and len(tds) > idx["rt"] and re.findall(r"\d+", tds[idx["rt"]]) else None
+        gr = tds[idx["gr"]] if "gr" in idx and len(tds) > idx["gr"] else "-"
+        if not gr or gr in ("--", "-"): gr = "-"
+        tags, bonus = parse_gear(gr)
+
+        horses.append({
+            "no": int(tds[idx["no"]]), "name": h_name, "code": h_code,
+            "wt": float(re.findall(r"\d+", tds[idx["wt"]])[0]) if "wt" in idx and re.findall(r"\d+", tds[idx["wt"]]) else 120.0,
+            "jk": tds[idx["jk"]] if "jk" in idx else "",
+            "dr": int(tds[idx["dr"]]) if "dr" in idx and tds[idx["dr"]].isdigit() else 7,
+            "tr": tds[idx["tr"]] if "tr" in idx else "",
+            "rt": rt, "gr": gr, "tags": tags, "bonus": bonus
+        })
+    return {"v": v, "dist": dist, "track": track}, horses
+
+def run():
+    target_date = "2026-09-27"
+    date_hkjc = "2026/09/27"
+    v = "ST"
+    ctx = train_model()
+
+    for r_no in range(1, 12):
+        meta, horses = fetch_race(date_hkjc, v, r_no)
+        if not meta or not horses: break
+        r_id = f"{target_date.replace('-', '')}_{v}_{r_no:02d}"
+
+        supabase.table("races").upsert({"race_id": r_id, "race_date": target_date, "venue": v, "race_no": r_no, "distance": meta["dist"], "track_type": meta["track"]}).execute()
+
+        feats = []
+        for h in horses:
+            feats.append({
+                "draw": h["dr"], "weight": h["wt"],
+                "speed": ctx["s"].get(h["code"], ctx["gs"]),
+                "j_rt": ctx["j"].get(h["jk"], 0.08),
+                "t_rt": ctx["t"].get(h["tr"], 0.08),
+                "syn": ctx["p"].get(f"{h['jk']}_{h['tr']}", 0.08)
+            })
+        fdf = pd.DataFrame(feats)
+        fdf["d_wt"] = fdf["weight"] - fdf["weight"].mean()
+        fdf["d_sp"] = fdf["speed"] - fdf["speed"].mean()
+
+        scores = ctx["m"].predict(fdf[ctx["c"]])
+        for i, h in enumerate(horses): scores[i] += h["bonus"]
         exp_s = np.exp(scores - np.max(scores))
         probs = (exp_s / exp_s.sum()) * 100.0
 
-        scored = []
         for i, h in enumerate(horses):
-            tags = []
-            if h["draw"] <= 3: tags.append("🎯 黃金內檔")
-            elif h["draw"] >= 11: tags.append("⚠️ 外檔考驗")
-            tags.append("⏳ 體力黃金期")
+            h["prob"] = round(float(probs[i]), 2)
+            if h["dr"] <= 3: h["tags"].append("🎯 黃金內檔")
+            elif h["dr"] >= 11: h["tags"].append("⚠️ 外檔考驗")
 
-            scored.append({
-                "race_id": race_id,
-                "horse_no": h["horse_no"], # 寫入真實馬號
-                "horse_code": h["horse_code"],
-                "horse_name": h["horse_name"],
-                "draw": h["draw"],
-                "jockey": h["jockey"],
-                "win_probability": round(float(probs[i]), 2),
-                "gear": h["gear"],
-                "rating": h["rating"],
-                "smart_tags": tags,
-                "combo_synergy": round(float(feats[i]["combo_synergy"]) * 100, 1)
+        horses.sort(key=lambda x: x["prob"], reverse=True)
+        payload = []
+        for rank, h in enumerate(horses, 1):
+            payload.append({
+                "race_id": r_id, "horse_no": h["no"], "horse_code": h["code"], "horse_name": h["name"],
+                "draw": h["dr"], "jockey": h["jk"], "win_probability": h["prob"], "predicted_rank": rank,
+                "rating": h["rt"], "gear": h["gr"], "smart_tags": h["tags"],
+                "bet_strategy": "🎯 獨贏首選 / 連贏馬膽" if rank==1 else ("⚡ 次選主力" if rank==2 else ("🛡️ 連贏配腳" if rank<=4 else ""))
             })
-
-        scored.sort(key=lambda x: x["win_probability"], reverse=True)
-        final_payload = []
-        for rank, item in enumerate(scored, 1):
-            strat = "🎯 獨贏首選 / 連贏馬膽" if rank == 1 else ("⚡ 次選主力" if rank == 2 else ("🛡️ 連贏配腳" if rank <= 4 else ""))
-            final_payload.append({
-                "race_id": item["race_id"],
-                "horse_no": item["horse_no"],
-                "horse_code": item["horse_code"],
-                "horse_name": item["horse_name"],
-                "draw": item["draw"],
-                "jockey": item["jockey"],
-                "win_probability": item["win_probability"],
-                "predicted_rank": rank,
-                "is_value_bet": rank <= 2,
-                "gear": item["gear"],
-                "rating": item["rating"],
-                "smart_tags": item["smart_tags"],
-                "combo_synergy": item["combo_synergy"],
-                "bet_strategy": strat
-            })
-
-        # 寫入前先清除舊資料，確保第1至11場各自獨立不混淆
-        supabase.table("race_predictions").delete().eq("race_id", race_id).execute()
-        supabase.table("race_predictions").insert(final_payload).execute()
-        print(f"  ✓ 第 {race_no} 場完成 (出賽: {len(horses)} 匹)")
-
-    print("\n🎉 成功！第 1 場至第 11 場各場獨立數據已全部恢復正常！")
+        supabase.table("race_predictions").delete().eq("race_id", r_id).execute()
+        supabase.table("race_predictions").insert(payload).execute()
+        print(f"✓ 第 {r_no} 場更新完畢: {len(horses)} 匹馬")
 
 if __name__ == "__main__":
-    run_upcoming()
+    run()
