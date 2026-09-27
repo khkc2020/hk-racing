@@ -139,29 +139,44 @@ def parse_racecard_with_gear(race_no):
     table = soup.find("table", class_="tableBorder2") or soup.find("table", class_="f_tac")
     if not table: return None, None
 
-    # 動態表頭索引定位
-    header_tr = table.find("tr")
+    # 🌟 核心修復 1：精準穿透標題行，鎖定包含「馬名/馬號」的真實表頭行
+    header_tr = None
+    for r in table.find_all("tr"):
+        txt = r.get_text()
+        if "馬名" in txt or "馬號" in txt:
+            header_tr = r
+            break
+    if not header_tr: return None, None
+
     headers = [th.get_text().strip() for th in header_tr.find_all(["th", "td"])]
     h_idx = {}
     for i, h in enumerate(headers):
         hl = h.lower().strip()
-        if ("馬號" in h or "馬匹編號" in h or "no." in hl) and "horse_no" not in h_idx: h_idx["horse_no"] = i
+        if ("馬號" in h or "馬匹編號" in h or hl == "no.") and "horse_no" not in h_idx: h_idx["horse_no"] = i
         elif "馬名" in h and "綵衣" not in h and "horse_name" not in h_idx: h_idx["horse_name"] = i
-        elif "烙號" in h and "horse_code" not in h_idx: h_idx["horse_code"] = i
         elif "負磅" in h and "+/-" not in h and "weight" not in h_idx: h_idx["weight"] = i
         elif "騎師" in h and "jockey" not in h_idx: h_idx["jockey"] = i
         elif "檔位" in h and "draw" not in h_idx: h_idx["draw"] = i
         elif "練馬師" in h and "trainer" not in h_idx: h_idx["trainer"] = i
-        elif "評分" in h and "+/-" not in h and "rating" not in h_idx: h_idx["rating"] = i
+        # 🌟 核心修復 2：排除「國際評分」與「+/-」，精準匹配本地評分
+        elif "評分" in h and "國際" not in h and "+/-" not in h and "rating" not in h_idx: h_idx["rating"] = i
         elif "配備" in h and "gear" not in h_idx: h_idx["gear"] = i
 
     horses = []
-    for r in table.find_all("tr")[1:]:
-        tds = [td.get_text().strip() for td in r.find_all(["td", "th"])]
-        if not tds or not tds[0].isdigit(): continue
+    passed_header = False
+    for r in table.find_all("tr"):
+        if r == header_tr:
+            passed_header = True
+            continue
+        if not passed_header:
+            continue
 
-        h_no = int(tds[h_idx["horse_no"]]) if "horse_no" in h_idx else int(tds[0])
-        raw_horse = tds[h_idx["horse_name"]] if "horse_name" in h_idx else tds
+        tds = [td.get_text().strip() for td in r.find_all(["td", "th"])]
+        if not tds or "horse_no" not in h_idx or len(tds) <= h_idx["horse_no"]: continue
+        if not tds[h_idx["horse_no"]].isdigit(): continue
+
+        h_no = int(tds[h_idx["horse_no"]])
+        raw_horse = tds[h_idx["horse_name"]] if "horse_name" in h_idx else ""
         cm = re.search(r"\(([A-Z0-9]+)\)", raw_horse)
         h_code = cm.group(1) if cm else f"H{h_no}"
         h_name = re.sub(r"[\s\xa0]*\(.*?\)", "", raw_horse).strip()
@@ -171,13 +186,13 @@ def parse_racecard_with_gear(race_no):
         draw = int(tds[h_idx["draw"]]) if "draw" in h_idx and tds[h_idx["draw"]].isdigit() else 7
         trainer = tds[h_idx["trainer"]] if "trainer" in h_idx else ""
 
-        # 精準提取評分
+        # 精準提取數值評分
         rating = None
         if "rating" in h_idx and re.findall(r"\d+", tds[h_idx["rating"]]):
             rating = int(re.findall(r"\d+", tds[h_idx["rating"]])[0])
 
-        # 精準提取配備
-        gear_str = tds[h_idx["gear"]] if "gear" in h_idx else "-"
+        # 精準提取官方配備
+        gear_str = tds[h_idx["gear"]] if "gear" in h_idx and len(tds) > h_idx["gear"] else "-"
         if not gear_str or gear_str in ("--", "-"): gear_str = "-"
 
         gear_signals = parse_all_gear_signals(gear_str)
@@ -201,7 +216,9 @@ def parse_racecard_with_gear(race_no):
 def run_upcoming():
     print("=== 正在檢測即將出賽排位表 ===")
     meta, test_h = parse_racecard_with_gear(1)
-    if not meta or not test_h: return
+    if not meta or not test_h: 
+        print("未檢測到有效排位表。")
+        return
 
     ctx = train_ranking_model()
     model = ctx["model"]
@@ -252,7 +269,7 @@ def run_upcoming():
 
             scored_horses.append({
                 "race_id": race_id,
-                "horse_no": h["horse_no"], # 儲存真實馬號
+                "horse_no": h["horse_no"], # 寫入真實馬號
                 "horse_code": h["horse_code"],
                 "horse_name": h["horse_name"],
                 "draw": h["draw"],
@@ -279,7 +296,7 @@ def run_upcoming():
                 "jockey": item["jockey"],
                 "trainer": item["trainer"],
                 "win_probability": item["win_probability"],
-                "predicted_rank": rank, # AI 預測排名
+                "predicted_rank": rank,
                 "is_value_bet": rank <= 2,
                 "gear": item["gear"],
                 "rating": item["rating"],
@@ -289,9 +306,9 @@ def run_upcoming():
             })
 
         supabase.table("race_predictions").upsert(final_payload, on_conflict="race_id,horse_code").execute()
-        print(f"  ✓ 第 {r} 場完成！")
+        print(f"  ✓ 第 {r} 場全量數據更新完成！")
 
-    print("\n🎉 全量真實馬號、評分與配備已成功更新至 Supabase！")
+    print("\n🎉 真實馬號、評分與配備已全數注入 Supabase！")
 
 if __name__ == "__main__":
     run_upcoming()
