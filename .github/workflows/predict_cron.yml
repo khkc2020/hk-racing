@@ -29,3 +29,8 @@ jobs:
         run: |
           python predict_upcoming.py
           python post_race_review.py
+
+          run: |
+       python test_email.py
+       python predict_upcoming.py
+       python post_race_review.py
