@@ -1,0 +1,33 @@
+name: 自動排位預測與配備分析
+
+on:
+  schedule:
+    # 逢星期一、星期四中午 12:30 (UTC 04:30) 排位公佈後自動運行
+    - cron: "30 4 * * 1,4"
+  # 同時支援在 GitHub 網頁上點擊「Run workflow」手動隨時觸發
+  workflow_dispatch:
+
+jobs:
+  run-prediction:
+    runs-on: ubuntu-latest
+    steps:
+      - name: 檢出代碼庫
+        uses: actions/checkout@v4
+
+      - name: 配置 Python 環境
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      - name: 安裝預測核心依賴
+        run: |
+          python -m pip install --upgrade pip
+          pip install requests beautifulsoup4 pandas numpy supabase lightgbm
+
+      - name: 執行 AI 排位預測
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+        run: |
+          python predict_upcoming.py
