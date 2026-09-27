@@ -17,9 +17,73 @@ HEADERS = {
     "Referer": "https://racing.hkjc.com/",
 }
 
+# ==========================================
+# 1. 【全量官方配備字典解析引擎】
+# ==========================================
+def parse_all_gear_signals(gear_str):
+    if not gear_str or gear_str == "-":
+        return {
+            "tags": [],
+            "focus_score": 0.0,
+            "breath_score": 0.0,
+            "is_major_change": False
+        }
+    
+    g = gear_str.upper()
+    tags = []
+    focus_bonus = 0.0
+    breath_bonus = 0.0
+    major_change = False
+
+    # 視線專注類 (B, BO, V, VO, P, PC, PS)
+    if re.search(r"B1|V1|PC1|P1", g):
+        tags.append("👓 首次眼罩 (B1大變革)")
+        focus_bonus += 0.20
+        major_change = True
+    elif re.search(r"B2|V2", g):
+        tags.append("👓 重戴眼罩")
+        focus_bonus += 0.10
+    elif re.search(r"\bB\b|\bV\b|\bPC\b", g):
+        tags.append("👓 配戴眼罩")
+        focus_bonus += 0.05
+    elif re.search(r"B-|V-", g):
+        tags.append("🔄 脫去眼罩 (換跑法)")
+        major_change = True
+
+    # 呼吸與口鼻喉類 (TT, XB, CO, CP, SB)
+    if "TT1" in g or "XB1" in g:
+        tags.append("👅 首次舌帶/鼻箍 (呼吸大改善)")
+        breath_bonus += 0.15
+        major_change = True
+    elif "TT" in g:
+        tags.append("👅 繫舌帶 (呼吸順暢)")
+        breath_bonus += 0.05
+    if "XB" in g:
+        tags.append("🦺 交叉鼻箍 (改善口位)")
+
+    # 情緒防躁類 (H, E)
+    if "H1" in g or "E1" in g:
+        tags.append("🎧 首次頭罩/耳塞 (防急躁)")
+        major_change = True
+    elif "H" in g:
+        tags.append("🎧 戴頭罩 (平伏情緒)")
+
+    # 跑線防斜跑 (BL, BR)
+    if "BL" in g or "BR" in g:
+        tags.append("⚖️ 防斜跑刺墊 (修正跑線)")
+
+    return {
+        "tags": tags,
+        "focus_score": focus_bonus,
+        "breath_score": breath_bonus,
+        "is_major_change": major_change
+    }
+
+# ==========================================
+# 2. 訓練全量 LightGBM 賽馬排序模型
+# ==========================================
 def train_ranking_model():
-    """使用全庫大數據訓練 LightGBM 賽馬排序引擎"""
-    print("--> 正在讀取大數據以訓練 LightGBM 排序引擎...")
+    print("--> 正在穿透讀取大數據 (支援數萬筆) 以訓練 LightGBM 排序引擎...")
     all_rows = []
     page_size = 1000
     offset = 0
@@ -51,7 +115,7 @@ def train_ranking_model():
     df["draw"] = df["draw"].fillna(7)
     df["actual_weight"] = df["actual_weight"].fillna(120)
 
-    # 同場相對特徵
+    # 同場相對優勢 (Intra-Race Differences)
     race_means = df.groupby("race_id")[["actual_weight", "horse_avg_speed"]].transform("mean")
     df["weight_vs_race_avg"] = df["actual_weight"] - race_means["actual_weight"]
     df["speed_vs_race_avg"] = df["horse_avg_speed"] - race_means["horse_avg_speed"]
@@ -79,7 +143,7 @@ def train_ranking_model():
         random_state=42
     )
     ranker.fit(df[feature_cols], df["rank_target"], group=groups)
-    print("✓ 賽事排位排序引擎訓練就緒！")
+    print("✓ 賽馬排位專用 LightGBM 排序引擎訓練就緒！")
 
     return {
         "model": ranker,
@@ -91,8 +155,10 @@ def train_ranking_model():
         "global_speed": global_speed
     }
 
+# ==========================================
+# 3. 解析排位表 (深度提取配備與評分)
+# ==========================================
 def parse_racecard_with_gear(race_no):
-    """解析排位表，深度提取配備代號 (B/B1/TT) 與評分"""
     url = f"https://racing.hkjc.com/racing/information/Chinese/Racing/RaceCard.aspx?RaceNo={race_no}"
     try:
         resp = requests.get(url, headers=HEADERS, timeout=12)
@@ -114,7 +180,6 @@ def parse_racecard_with_gear(race_no):
     course_m = re.search(r'\"([A-C\+3]+)\"\s*賽道', race_text)
     course = course_m.group(1) if course_m else None
 
-    # 班次 (Class)
     race_class = "第四班"
     if "第一班" in race_text: race_class = "第一班"
     elif "第二班" in race_text: race_class = "第二班"
@@ -144,9 +209,8 @@ def parse_racecard_with_gear(race_no):
         rating_str = tds[8] if len(tds) > 8 else "50"
         rating = int(re.findall(r"\d+", rating_str)[0]) if re.findall(r"\d+", rating_str) else 50
         
-        # 配備欄位 (通常位於後方第 12 格或文字末端)
         gear_str = tds[-1] if len(tds) >= 12 else ""
-        is_b1 = bool(re.search(r"B1|V1|P1", gear_str, re.I))
+        gear_signals = parse_all_gear_signals(gear_str)
 
         horses.append({
             "horse_no": int(tds[0]),
@@ -158,7 +222,7 @@ def parse_racecard_with_gear(race_no):
             "trainer": trainer,
             "rating": rating,
             "gear": gear_str,
-            "is_b1": is_b1
+            "gear_signals": gear_signals
         })
 
     race_meta = {
@@ -167,11 +231,14 @@ def parse_racecard_with_gear(race_no):
     }
     return race_meta, horses
 
+# ==========================================
+# 4. 賽前自動預測與手機同步
+# ==========================================
 def run_upcoming():
-    print("=== 正在檢測即將出賽排位表 (含配備與評分) ===")
+    print("=== 正在檢測即將出賽排位表 (全官方配備字典解析) ===")
     meta, test_h = parse_racecard_with_gear(1)
     if not meta or not test_h:
-        print("💡 提示：下一期排位表尚未正式公佈（通常於賽前兩天中午 12:00 公佈），系統保持待命！")
+        print("💡 提示：下一期排位表尚未正式公佈（通常於賽前兩天中午公佈），系統保持待命！")
         return
 
     ctx = train_ranking_model()
@@ -192,7 +259,6 @@ def run_upcoming():
             "race_class": meta["race_class"]
         }).execute()
 
-        # 組裝特徵 DataFrame
         feats = []
         for h in horses:
             h_spd = ctx["horse_speed"].get(h["horse_code"], ctx["global_speed"])
@@ -206,33 +272,27 @@ def run_upcoming():
                 "horse_avg_speed": h_spd,
                 "jockey_win_rate": j_rt,
                 "trainer_win_rate": t_rt,
-                "combo_synergy": c_rt,
-                "is_b1": h["is_b1"],
-                "gear": h["gear"],
-                "rating": h["rating"]
+                "combo_synergy": c_rt
             })
         
         feat_df = pd.DataFrame(feats)
-        # 同場相對優勢
         feat_df["weight_vs_race_avg"] = feat_df["actual_weight"] - feat_df["actual_weight"].mean()
         feat_df["speed_vs_race_avg"] = feat_df["horse_avg_speed"] - feat_df["horse_avg_speed"].mean()
 
         scores = model.predict(feat_df[ctx["features"]])
-        # 初戴眼罩 (B1) 給予正向激勵偏置 (+0.15)
+        # 融入全量配備加權修正 (專注度加乘 + 呼吸改善加乘)
         for i, h in enumerate(horses):
-            if h["is_b1"]: scores[i] += 0.15
+            sig = h["gear_signals"]
+            scores[i] += (sig["focus_score"] + sig["breath_score"])
 
-        # Softmax 轉換為標準勝率
         exp_s = np.exp(scores - np.max(scores))
         probs = (exp_s / exp_s.sum()) * 100.0
 
         scored_horses = []
         for i, h in enumerate(horses):
-            tags = []
+            tags = list(h["gear_signals"]["tags"])
             if h["draw"] <= 3: tags.append("🎯 黃金內檔")
             elif h["draw"] >= 11: tags.append("⚠️ 外檔考驗")
-            if h["is_b1"]: tags.append("👓 初戴眼罩 (B1)")
-            if "TT" in h["gear"].upper(): tags.append("👅 繫舌帶")
 
             scored_horses.append({
                 "race_id": race_id,
@@ -243,7 +303,7 @@ def run_upcoming():
                 "win_probability": round(float(probs[i]), 2),
                 "gear": h["gear"],
                 "rating": h["rating"],
-                "is_b1": h["is_b1"],
+                "is_b1": "B1" in h["gear"].upper(),
                 "smart_tags": tags,
                 "combo_synergy": round(float(feats[i]["combo_synergy"]) * 100, 1)
             })
@@ -277,10 +337,10 @@ def run_upcoming():
             })
 
         supabase.table("race_predictions").upsert(final_payload, on_conflict="race_id,horse_code").execute()
-        print(f"  ✓ 第 {r} 場分析完成！已識別配備代號並推送至手機！")
+        print(f"  ✓ 第 {r} 場全量配備與排名預測完成！")
         time.sleep(0.5)
 
-    print("\n🎉 下一期賽事【配備變動與排序預測】已全部送達手機！")
+    print("\n🎉 下一期賽事【全量官方配備 + 排序預測】已全部送達手機！")
 
 if __name__ == "__main__":
     run_upcoming()
