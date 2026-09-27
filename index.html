@@ -2,252 +2,187 @@
 <html lang="zh-HK">
 <head>
   <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-  <title>HK Racing AI | 量化決策系統</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>香港賽馬 AI 預測看盤系統</title>
   <script src="https://cdn.tailwindcss.com"></script>
   <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
-  <style>
-    body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
-    .hide-scrollbar::-webkit-scrollbar { display: none; }
-    .hide-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }
-  </style>
+  <script src="https://unpkg.com/vue@3/dist/vue.global.prod.js"></script>
+  <style>[v-cloak]{display:none;}</style>
 </head>
-<body class="bg-slate-950 text-slate-100 min-h-screen pb-16">
-
-  <!-- 頂部導航 -->
-  <header class="sticky top-0 z-50 bg-slate-900/95 backdrop-blur-md border-b border-slate-800 px-4 py-3 flex items-center justify-between">
-    <div>
-      <h1 class="text-lg font-bold tracking-tight text-white flex items-center gap-1.5">
-        🐎 <span>HK Racing AI</span>
-      </h1>
-      <p id="header-date" class="text-xs text-slate-400">正在同步雲端數據...</p>
-    </div>
-    <button onclick="toggleValueFilter()" id="btn-filter" class="text-xs px-2.5 py-1 rounded-full border border-slate-700 bg-slate-800 text-slate-300 font-medium transition-all">
-      🔥 僅看精選
-    </button>
-  </header>
-
-  <!-- 場次滑動選擇器 -->
-  <nav class="sticky top-[57px] z-40 bg-slate-950/95 backdrop-blur-sm border-b border-slate-800/80 px-2 py-2">
-    <div id="race-selector" class="flex gap-2 overflow-x-auto hide-scrollbar px-2"></div>
-  </nav>
-
-  <main class="max-w-md mx-auto px-4 mt-3">
-    <!-- 賽事概覽 -->
-    <div id="race-info" class="bg-slate-900 border border-slate-800 rounded-2xl p-3.5 shadow-sm mb-3">
-      <div class="flex justify-between items-center">
-        <div>
-          <span id="info-race-no" class="text-xl font-extrabold text-white">第 -- 場</span>
-          <span id="info-details" class="text-xs text-slate-400 ml-2">--</span>
-        </div>
-        <span id="info-venue" class="text-xs font-bold px-2 py-0.5 bg-blue-500/10 text-blue-400 border border-blue-500/20 rounded-md">--</span>
+<body class="bg-slate-100 text-slate-800 min-h-screen">
+  <div id="app" v-cloak class="max-w-4xl mx-auto px-3 sm:px-6 py-5">
+    
+    <!-- 頂部標題與按鈕 -->
+    <header class="flex items-center justify-between pb-4 border-b border-slate-200">
+      <div>
+        <h1 class="text-xl sm:text-2xl font-black text-slate-900 flex items-center gap-1.5">
+          <span>🏇</span> 香港賽馬 AI 看盤系統
+        </h1>
+        <p class="text-xs text-slate-500 mt-0.5">LightGBM 排序模型 • 20種官方全配備解析 • 騎練默契</p>
       </div>
-    </div>
-
-    <!-- 💡 AI 操盤手下注組合箱 -->
-    <div id="bet-box" class="bg-gradient-to-br from-indigo-950/60 to-slate-900 border border-indigo-500/30 rounded-2xl p-3.5 shadow-md mb-4">
-      <div class="flex items-center gap-1.5 text-xs font-bold text-indigo-400 mb-2">
-        <span>💡 AI 智能下注組合推薦</span>
-      </div>
-      <div id="bet-advice" class="text-xs text-slate-300 space-y-1">
-        正在運算最佳下注組合...
-      </div>
-    </div>
-
-    <!-- 馬匹列表 -->
-    <div class="flex items-center justify-between mb-2.5 px-1">
-      <h2 class="text-sm font-semibold text-slate-300">各駒戰力排行榜</h2>
-      <span id="horse-count-label" class="text-xs text-slate-500">按勝率排序</span>
-    </div>
-
-    <div id="horses-list" class="space-y-3">
-      <div class="text-center py-12 text-slate-500 text-sm">正在載入數據...</div>
-    </div>
-  </main>
-
-  <script>
-    const SUPABASE_URL = "https://rxmkohhgznfcnhdqegwq.supabase.co";
-    const SUPABASE_ANON_KEY = "填入你的publishable_anon_key";
-
-    const supabaseClient = supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
-    let allRaces = [];
-    let currentPredictions = [];
-    let onlyValueBets = false;
-
-    async function initApp() {
-      try {
-        const { data: races } = await supabaseClient
-          .from('races')
-          .select('*')
-          .order('race_date', { ascending: false })
-          .order('race_no', { ascending: true });
-
-        if (!races || races.length === 0) {
-          document.getElementById('horses-list').innerHTML = '<div class="text-center py-12 text-amber-400">目前尚無賽事。</div>';
-          return;
-        }
-
-        const latestDate = races[0].race_date;
-        allRaces = races.filter(r => r.race_date === latestDate);
-        document.getElementById('header-date').innerText = `賽事日期：${latestDate}`;
-
-        renderRaceSelector();
-        selectRace(allRaces[0].race_id);
-      } catch (err) {
-        console.error(err);
-      }
-    }
-
-    function renderRaceSelector() {
-      const container = document.getElementById('race-selector');
-      container.innerHTML = allRaces.map(r => `
-        <button onclick="selectRace('${r.race_id}')" id="btn-${r.race_id}"
-          class="race-btn flex-shrink-0 px-3.5 py-1.5 rounded-xl text-xs font-bold transition-all bg-slate-900 text-slate-400 border border-slate-800">
-          第 ${r.race_no} 場
+      <div class="flex gap-2">
+        <button @click="showSettings=true" class="bg-white border text-slate-700 px-3 py-1.5 rounded-lg text-xs font-bold shadow-sm">⚙️ 設定</button>
+        <button @click="loadRaces" :disabled="loading" class="bg-emerald-600 text-white px-3.5 py-1.5 rounded-lg text-xs font-bold shadow-sm disabled:opacity-50">
+          {{ loading ? '載入中...' : '🔄 重新整理' }}
         </button>
-      `).join('');
-    }
+      </div>
+    </header>
 
-    async function selectRace(raceId) {
-      const race = allRaces.find(r => r.race_id === raceId);
-      document.querySelectorAll('.race-btn').forEach(btn => {
-        btn.className = "race-btn flex-shrink-0 px-3.5 py-1.5 rounded-xl text-xs font-bold transition-all bg-slate-900 text-slate-400 border border-slate-800";
-      });
-      const activeBtn = document.getElementById(`btn-${raceId}`);
-      if (activeBtn) {
-        activeBtn.className = "race-btn flex-shrink-0 px-3.5 py-1.5 rounded-xl text-xs font-bold transition-all bg-blue-600 text-white shadow-md shadow-blue-500/20";
-      }
+    <!-- 賽日與場次切換列 -->
+    <div class="my-3 flex items-center gap-1.5 overflow-x-auto pb-1">
+      <button v-for="r in currentDayRaces" :key="r.race_id" @click="selectRace(r)"
+        :class="selectedRaceId === r.race_id ? 'bg-emerald-600 text-white shadow-sm' : 'bg-white text-slate-700 border border-slate-200'"
+        class="px-3 py-1.5 rounded-lg text-xs sm:text-sm font-bold whitespace-nowrap transition">
+        第 {{ r.race_no }} 場
+      </button>
+      <button v-if="currentDayRaces.length === 0" @click="loadDemoData" class="bg-amber-100 text-amber-800 border border-amber-300 px-3 py-1.5 rounded-lg text-xs font-bold">
+        🎲 點此載入示範排位預覽
+      </button>
+    </div>
 
-      document.getElementById('info-race-no').innerText = `第 ${race.race_no} 場`;
-      document.getElementById('info-details').innerText = `${race.track_type || '草地'} • ${race.distance || '--'}米 • ${race.course ? race.course + '賽道' : ''}`;
-      document.getElementById('info-venue').innerText = race.venue === 'ST' ? '沙田' : '跑馬地';
+    <!-- 賽事概況卡片 -->
+    <div v-if="currentRace" class="bg-white rounded-xl border border-slate-200 p-3.5 shadow-sm mb-3 flex items-center justify-between text-xs sm:text-sm">
+      <div class="font-bold text-slate-900">
+        <span class="bg-emerald-600 text-white px-2 py-0.5 rounded-full mr-1.5 text-xs">第 {{ currentRace.race_no }} 場</span>
+        {{ currentRace.venue === 'ST' ? '沙田' : '跑馬地' }} • {{ currentRace.race_class }}
+      </div>
+      <div class="text-slate-500 font-medium">
+        {{ currentRace.track_type }} • {{ currentRace.distance }}米 {{ currentRace.course ? '• ' + currentRace.course + '賽道' : '' }}
+      </div>
+    </div>
 
-      document.getElementById('horses-list').innerHTML = '<div class="text-center py-8 text-slate-500 text-sm">正在分析各駒戰力...</div>';
-
-      const { data: preds } = await supabaseClient
-        .from('race_predictions')
-        .select('*')
-        .eq('race_id', raceId)
-        .order('predicted_rank', { ascending: true });
-
-      currentPredictions = preds || [];
-      renderBetAdvice(currentPredictions);
-      renderHorses();
-    }
-
-    function renderBetAdvice(horses) {
-      const box = document.getElementById('bet-advice');
-      if (!horses || horses.length < 3) {
-        box.innerHTML = '本場出賽馬匹較少，建議單打獨贏。';
-        return;
-      }
-      const top1 = horses[0];
-      const top2 = horses;
-      const top3 = horses[2];
-      const top4 = horses.length > 3 ? horses[3] : null;
-
-      const bankerName = `${top1.horse_name} (${top1.draw}檔)`;
-      const legsNames = top4 
-        ? `${top2.horse_name}, ${top3.horse_name}, ${top4.horse_name}`
-        : `${top2.horse_name}, ${top3.horse_name}`;
-
-      box.innerHTML = `
-        <div class="flex items-center gap-1.5"><span class="text-amber-400 font-bold">🎯 獨贏 / 位置首選：</span><span class="text-white font-semibold">${bankerName}</span></div>
-        <div class="flex items-center gap-1.5 mt-1"><span class="text-indigo-300 font-bold">💎 連贏 Q / 位置 Q 組合：</span><span class="text-slate-200">以 <strong class="text-white">${top1.horse_name}</strong> 作馬膽，拖 <strong class="text-slate-200">${legsNames}</strong></span></div>
-        <div class="text-[11px] text-slate-400 mt-1">AI 評級信心指數：${top1.win_probability}% • 期望值最高</div>
-      `;
-    }
-
-    function toggleValueFilter() {
-      onlyValueBets = !onlyValueBets;
-      const btn = document.getElementById('btn-filter');
-      if (onlyValueBets) {
-        btn.className = "text-xs px-2.5 py-1 rounded-full border border-rose-500 bg-rose-500/20 text-rose-300 font-bold shadow-sm shadow-rose-500/30";
-      } else {
-        btn.className = "text-xs px-2.5 py-1 rounded-full border border-slate-700 bg-slate-800 text-slate-300 font-medium transition-all";
-      }
-      renderHorses();
-    }
-
-    function renderHorses() {
-      let list = currentPredictions;
-      if (onlyValueBets) {
-        list = list.filter(h => h.is_value_bet);
-      }
-
-      const container = document.getElementById('horses-list');
-      if (!list || list.length === 0) {
-        container.innerHTML = '<div class="text-center py-8 text-slate-500 text-sm">本場未發現高價值投注點。</div>';
-        return;
-      }
-
-      container.innerHTML = list.map(h => {
-        let rankBadge = `<span class="w-6 h-6 rounded-full bg-slate-800 text-slate-400 flex items-center justify-center text-xs font-bold">${h.predicted_rank}</span>`;
-        let borderHighlight = "border-slate-800/80";
-
-        if (h.predicted_rank === 1) {
-          rankBadge = `<span class="w-6 h-6 rounded-full bg-amber-500 text-slate-950 flex items-center justify-center text-xs font-black shadow-lg shadow-amber-500/30">1</span>`;
-          borderHighlight = "border-amber-500/40 bg-gradient-to-r from-amber-500/5 to-transparent";
-        } else if (h.predicted_rank === 2) {
-          rankBadge = `<span class="w-6 h-6 rounded-full bg-slate-300 text-slate-950 flex items-center justify-center text-xs font-bold">2</span>`;
-          borderHighlight = "border-slate-400/30";
-        } else if (h.predicted_rank === 3) {
-          rankBadge = `<span class="w-6 h-6 rounded-full bg-amber-700 text-amber-100 flex items-center justify-center text-xs font-bold">3</span>`;
-          borderHighlight = "border-amber-700/30";
-        }
-
-        const valueTag = h.is_value_bet 
-          ? `<span class="text-[10px] font-black px-1.5 py-0.5 rounded bg-rose-500/20 text-rose-400 border border-rose-500/30 animate-pulse">🔥 價值注項</span>` 
-          : '';
-
-        let badges = '';
-        if (h.smart_tags && Array.isArray(h.smart_tags)) {
-          badges = h.smart_tags.map(t => {
-            let color = "bg-slate-800 text-slate-400 border-slate-700";
-            if (t.includes("內檔") || t.includes("頭選")) color = "bg-amber-500/10 text-amber-300 border-amber-500/20";
-            if (t.includes("體力") || t.includes("狀態")) color = "bg-emerald-500/10 text-emerald-300 border-emerald-500/20";
-            if (t.includes("外檔")) color = "bg-rose-500/10 text-rose-300 border-rose-500/20";
-            return `<span class="text-[10px] px-1.5 py-0.5 rounded border ${color}">${t}</span>`;
-          }).join(' ');
-        }
-
-        const oddsDisplay = h.market_odds ? `賠率 ${h.market_odds}` : '';
-
-        return `
-          <div class="bg-slate-900 border ${borderHighlight} rounded-2xl p-3.5 transition-all shadow-sm">
-            <div class="flex items-center justify-between mb-1.5">
-              <div class="flex items-center gap-2.5">
-                ${rankBadge}
-                <div>
-                  <div class="flex items-center gap-1.5">
-                    <span class="font-bold text-white text-base">${h.horse_name}</span>
-                    <span class="text-[11px] text-slate-500">(${h.horse_code})</span>
-                    ${valueTag}
-                  </div>
-                  <div class="text-xs text-slate-400 mt-0.5">
-                    騎師: <span class="text-slate-300 font-medium">${h.jockey || '--'}</span> • 
-                    檔位: <span class="text-slate-300 font-medium">${h.draw || '--'}檔</span>
-                  </div>
-                  ${h.bet_strategy ? `<div class="text-[11px] font-bold text-amber-400 mt-1">${h.bet_strategy}</div>` : ''}
-                </div>
-              </div>
-              <div class="text-right">
-                <div class="text-base font-extrabold text-blue-400">${h.win_probability}%</div>
-                <div class="text-[10px] text-slate-500">${oddsDisplay}</div>
-              </div>
+    <!-- 馬匹預測排行榜 -->
+    <div v-if="predictions.length > 0" class="space-y-2.5">
+      <div v-for="h in predictions" :key="h.horse_code"
+        :class="h.predicted_rank === 1 ? 'border-amber-400 bg-amber-50/50 ring-1 ring-amber-300' : 'border-slate-200 bg-white'"
+        class="p-3.5 rounded-xl border shadow-sm transition">
+        
+        <div class="flex items-start justify-between">
+          <div class="flex items-center gap-2.5">
+            <div :class="{'bg-amber-500 text-white font-black': h.predicted_rank===1, 'bg-slate-400 text-white font-bold': h.predicted_rank===2, 'bg-amber-700 text-white font-bold': h.predicted_rank===3, 'bg-slate-100 text-slate-600': h.predicted_rank>3}"
+              class="w-7 h-7 rounded-lg flex items-center justify-center text-xs flex-shrink-0">
+              {{ h.predicted_rank }}
             </div>
-            
-            ${badges ? `<div class="flex flex-wrap gap-1.5 my-2">${badges}</div>` : ''}
-
-            <div class="w-full bg-slate-800 rounded-full h-1.5 overflow-hidden mt-1.5">
-              <div class="bg-gradient-to-r from-blue-500 to-indigo-500 h-1.5 rounded-full" style="width: ${Math.min(h.win_probability * 2.5, 100)}%"></div>
+            <div>
+              <div class="flex items-baseline gap-1.5">
+                <span class="font-black text-slate-900 text-base">{{ h.horse_name }}</span>
+                <span class="text-xs text-slate-400 font-mono">({{ h.horse_code }})</span>
+                <span class="text-xs bg-slate-100 text-slate-700 px-1.5 py-0.5 rounded font-bold">{{ h.draw }}檔</span>
+              </div>
+              <div class="text-xs text-slate-500 mt-0.5">
+                {{ h.jockey }} • 評分 {{ h.rating || '-' }} • 配備: {{ h.gear || '-' }}
+              </div>
             </div>
           </div>
-        `;
-      }).join('');
-    }
+          <div class="text-right">
+            <div class="text-sm font-black" :class="h.predicted_rank === 1 ? 'text-amber-600' : 'text-slate-800'">
+              {{ h.win_probability }}%
+            </div>
+            <div class="w-16 bg-slate-100 rounded-full h-1.5 mt-1 overflow-hidden">
+              <div class="h-1.5 rounded-full" :class="h.predicted_rank===1 ? 'bg-amber-500':'bg-emerald-600'" :style="{ width: Math.min(100, h.win_probability * 2.5) + '%' }"></div>
+            </div>
+          </div>
+        </div>
 
-    initApp();
+        <!-- 智慧標籤列 -->
+        <div class="mt-2.5 flex flex-wrap items-center gap-1.5 pt-2 border-t border-slate-100">
+          <span v-if="h.bet_strategy" class="bg-amber-100 text-amber-900 text-xs px-2 py-0.5 rounded-md font-bold">{{ h.bet_strategy }}</span>
+          <span v-if="h.combo_synergy" class="bg-blue-50 text-blue-700 text-xs px-2 py-0.5 rounded-md font-semibold">🤝 騎練勝率 {{ h.combo_synergy }}%</span>
+          <span v-for="(tag, idx) in h.smart_tags" :key="idx"
+            :class="{'bg-red-50 text-red-700 font-bold border border-red-200': tag.includes('B1')||tag.includes('大變革'), 'bg-purple-50 text-purple-700': tag.includes('舌帶'), 'bg-emerald-50 text-emerald-700': tag.includes('內檔'), 'bg-slate-100 text-slate-600': !tag.includes('B1')&&!tag.includes('舌帶')&&!tag.includes('內檔')}"
+            class="text-xs px-2 py-0.5 rounded-md">
+            {{ tag }}
+          </span>
+        </div>
+      </div>
+    </div>
+
+    <!-- 設定視窗 -->
+    <div v-if="showSettings" class="fixed inset-0 bg-black/50 backdrop-blur-sm flex items-center justify-center p-4 z-50">
+      <div class="bg-white rounded-2xl max-w-sm w-full p-5 shadow-2xl">
+        <h3 class="text-base font-bold text-slate-900 mb-3">⚙️ 連線設定</h3>
+        <label class="text-xs font-bold text-slate-700 block mb-1">Supabase URL:</label>
+        <input v-model="supabaseUrl" type="text" class="w-full text-xs p-2.5 border rounded-lg mb-3 outline-none" />
+        <label class="text-xs font-bold text-slate-700 block mb-1">Supabase Anon Key:</label>
+        <input v-model="supabaseKey" type="password" class="w-full text-xs p-2.5 border rounded-lg mb-4 outline-none" placeholder="貼上 anon key" />
+        <div class="flex justify-end gap-2">
+          <button @click="showSettings=false" class="px-3 py-1.5 text-xs text-slate-600">取消</button>
+          <button @click="saveSettings" class="px-4 py-1.5 text-xs font-bold bg-emerald-600 text-white rounded-lg">儲存並連線</button>
+        </div>
+      </div>
+    </div>
+
+  </div>
+
+  <script>
+    const { createApp, ref, computed, onMounted } = Vue;
+    createApp({
+      setup() {
+        const DEFAULT_URL = "https://rxmkohhgznfcnhdqegwq.supabase.co";
+        const supabaseUrl = ref(localStorage.getItem('sb_url') || DEFAULT_URL);
+        const supabaseKey = ref(localStorage.getItem('sb_key') || '');
+        const showSettings = ref(false);
+        const loading = ref(false);
+        const races = ref([]);
+        const selectedRaceId = ref('');
+        const predictions = ref([]);
+        let sbClient = null;
+
+        const initSupabase = () => {
+          if (supabaseUrl.value && supabaseKey.value) {
+            sbClient = supabase.createClient(supabaseUrl.value, supabaseKey.value);
+            return true;
+          }
+          return false;
+        };
+
+        const saveSettings = () => {
+          localStorage.setItem('sb_url', supabaseUrl.value.trim());
+          localStorage.setItem('sb_key', supabaseKey.value.trim());
+          showSettings.value = false;
+          if (initSupabase()) loadRaces();
+        };
+
+        const currentDayRaces = computed(() => races.value.sort((a,b) => a.race_no - b.race_no));
+        const currentRace = computed(() => races.value.find(r => r.race_id === selectedRaceId.value) || null);
+
+        const loadRaces = async () => {
+          if (!initSupabase()) return;
+          loading.value = true;
+          try {
+            const { data } = await sbClient.from('races').select('*').order('race_date', { ascending: false }).limit(15);
+            races.value = data || [];
+            if (races.value.length > 0) selectRace(races.value[0]);
+          } finally { loading.value = false; }
+        };
+
+        const selectRace = async (r) => {
+          selectedRaceId.value = r.race_id;
+          if (!sbClient) return;
+          loading.value = true;
+          try {
+            const { data } = await sbClient.from('race_predictions').select('*').eq('race_id', r.race_id).order('predicted_rank', { ascending: true });
+            predictions.value = data || [];
+          } finally { loading.value = false; }
+        };
+
+        const loadDemoData = () => {
+          races.value = [{ race_id: 'demo_01', race_no: 1, venue: 'HV', race_class: '第四班', distance: 1200, track_type: '草地', course: 'A' }];
+          selectedRaceId.value = 'demo_01';
+          predictions.value = [
+            { horse_name: '超霸勝', horse_code: 'H128', draw: 2, jockey: '潘頓', rating: 60, gear: 'B1/TT', win_probability: 32.5, predicted_rank: 1, bet_strategy: '🎯 獨贏首選 / 連贏馬膽', combo_synergy: 38.2, smart_tags: ['👑 AI頭選', '👓 首次眼罩 (B1大變革)', '👅 繫舌帶', '🎯 黃金內檔'] },
+            { horse_name: '快步速', horse_code: 'J045', draw: 4, jockey: '何澤堯', rating: 58, gear: 'TT', win_probability: 21.0, predicted_rank: 2, bet_strategy: '⚡ 次選主力', combo_synergy: 29.5, smart_tags: ['⚡ 主力爭位', '👅 繫舌帶'] }
+          ];
+        };
+
+        onMounted(() => {
+          if (initSupabase()) loadRaces();
+          else loadDemoData();
+        });
+
+        return { supabaseUrl, supabaseKey, showSettings, loading, currentDayRaces, currentRace, selectedRaceId, predictions, saveSettings, loadRaces, selectRace, loadDemoData };
+      }
+    }).mount('#app');
   </script>
 </body>
 </html>
