@@ -112,18 +112,16 @@ def train_ranking_model():
         "pair_dict": pair_dict, "horse_speed": horse_speed_dict, "global_speed": global_speed
     }
 
-def parse_racecard_with_gear(race_no):
-    url = f"https://racing.hkjc.com/racing/information/Chinese/Racing/RaceCard.aspx?RaceNo={race_no}"
+def fetch_table_horses(url):
     try:
         resp = requests.get(url, headers=HEADERS, timeout=12)
-        if resp.status_code != 200 or "資料將於稍後公佈" in resp.text: return None, None
-    except: return None, None
+        if resp.status_code != 200: return None, []
+    except: return None, []
 
     resp.encoding = "utf-8"
     soup = BeautifulSoup(resp.text, "html.parser")
     info_div = soup.find("div", class_="race_tab")
-    if not info_div: return None, None
-    race_text = info_div.get_text()
+    race_text = info_div.get_text() if info_div else soup.text
 
     venue = "ST" if "沙田" in race_text else "HV"
     dist_m = re.search(r"(\d{3,4})米", race_text)
@@ -137,16 +135,16 @@ def parse_racecard_with_gear(race_no):
         if c in race_text: race_class = c; break
 
     table = soup.find("table", class_="tableBorder2") or soup.find("table", class_="f_tac")
-    if not table: return None, None
+    if not table: return None, []
 
-    # 🌟 核心修復 1：精準穿透標題行，鎖定包含「馬名/馬號」的真實表頭行
+    # 1. 穿透定位表頭行
     header_tr = None
     for r in table.find_all("tr"):
         txt = r.get_text()
         if "馬名" in txt or "馬號" in txt:
             header_tr = r
             break
-    if not header_tr: return None, None
+    if not header_tr: return None, []
 
     headers = [th.get_text().strip() for th in header_tr.find_all(["th", "td"])]
     h_idx = {}
@@ -158,18 +156,16 @@ def parse_racecard_with_gear(race_no):
         elif "騎師" in h and "jockey" not in h_idx: h_idx["jockey"] = i
         elif "檔位" in h and "draw" not in h_idx: h_idx["draw"] = i
         elif "練馬師" in h and "trainer" not in h_idx: h_idx["trainer"] = i
-        # 🌟 核心修復 2：排除「國際評分」與「+/-」，精準匹配本地評分
         elif "評分" in h and "國際" not in h and "+/-" not in h and "rating" not in h_idx: h_idx["rating"] = i
         elif "配備" in h and "gear" not in h_idx: h_idx["gear"] = i
 
     horses = []
-    passed_header = False
+    passed = False
     for r in table.find_all("tr"):
         if r == header_tr:
-            passed_header = True
+            passed = True
             continue
-        if not passed_header:
-            continue
+        if not passed: continue
 
         tds = [td.get_text().strip() for td in r.find_all(["td", "th"])]
         if not tds or "horse_no" not in h_idx or len(tds) <= h_idx["horse_no"]: continue
@@ -186,16 +182,12 @@ def parse_racecard_with_gear(race_no):
         draw = int(tds[h_idx["draw"]]) if "draw" in h_idx and tds[h_idx["draw"]].isdigit() else 7
         trainer = tds[h_idx["trainer"]] if "trainer" in h_idx else ""
 
-        # 精準提取數值評分
         rating = None
         if "rating" in h_idx and re.findall(r"\d+", tds[h_idx["rating"]]):
             rating = int(re.findall(r"\d+", tds[h_idx["rating"]])[0])
 
-        # 精準提取官方配備
         gear_str = tds[h_idx["gear"]] if "gear" in h_idx and len(tds) > h_idx["gear"] else "-"
         if not gear_str or gear_str in ("--", "-"): gear_str = "-"
-
-        gear_signals = parse_all_gear_signals(gear_str)
 
         horses.append({
             "horse_no": h_no,
@@ -207,32 +199,44 @@ def parse_racecard_with_gear(race_no):
             "trainer": trainer,
             "rating": rating,
             "gear": gear_str,
-            "gear_signals": gear_signals
+            "gear_signals": parse_all_gear_signals(gear_str)
         })
 
-    race_meta = {"venue": venue, "race_no": race_no, "distance": distance, "track_type": track, "course": course, "race_class": race_class}
-    return race_meta, horses
+    meta = {"venue": venue, "distance": distance, "track_type": track, "course": course, "race_class": race_class}
+    return meta, horses
 
 def run_upcoming():
-    print("=== 正在檢測即將出賽排位表 ===")
-    meta, test_h = parse_racecard_with_gear(1)
-    if not meta or not test_h: 
-        print("未檢測到有效排位表。")
-        return
+    print("=== 香港賽馬 AI 智能預測與修復引擎啟動 ===")
+    
+    # 先測試即將出賽排位表
+    test_url = "https://racing.hkjc.com/racing/information/Chinese/Racing/RaceCard.aspx?RaceNo=1"
+    r = requests.get(test_url, headers=HEADERS, timeout=10)
+    
+    is_upcoming_ready = (r.status_code == 200 and "資料將於稍後公佈" not in r.text and "馬名" in r.text)
+    
+    if is_upcoming_ready:
+        print("✓ 偵測到下一期官方排位表已公佈！正在進行實時預測...")
+        target_date = time.strftime("%Y-%m-%d")
+        url_template = "https://racing.hkjc.com/racing/information/Chinese/Racing/RaceCard.aspx?RaceNo={}"
+    else:
+        print("💡 提示：下一期排位表尚未出爐（今日中午 12:00 公佈）。")
+        print("🔄 正在自動補齊並修復最近賽事 (2026-09-27) 的真實馬號、評分與配備...")
+        target_date = "2026-09-27"
+        url_template = "https://racing.hkjc.com/racing/information/Chinese/racing/RaceCard.aspx?RaceDate=2026/09/27&Racecourse=ST&RaceNo={}"
 
     ctx = train_ranking_model()
     model = ctx["model"]
 
-    for r in range(1, 12):
-        meta, horses = parse_racecard_with_gear(r)
+    for race_no in range(1, 12):
+        u = url_template.format(race_no)
+        meta, horses = fetch_table_horses(u)
         if not meta or not horses: break
 
-        today_date = time.strftime("%Y-%m-%d")
-        race_id = f"{today_date.replace('-', '')}_{meta['venue']}_{r:02d}"
+        race_id = f"{target_date.replace('-', '')}_{meta['venue']}_{race_no:02d}"
 
         supabase.table("races").upsert({
-            "race_id": race_id, "race_date": today_date,
-            "venue": meta["venue"], "race_no": r, "distance": meta["distance"],
+            "race_id": race_id, "race_date": target_date,
+            "venue": meta["venue"], "race_no": race_no, "distance": meta["distance"],
             "track_type": meta["track_type"], "course": meta["course"],
             "race_class": meta["race_class"]
         }).execute()
@@ -261,13 +265,13 @@ def run_upcoming():
         exp_s = np.exp(scores - np.max(scores))
         probs = (exp_s / exp_s.sum()) * 100.0
 
-        scored_horses = []
+        scored = []
         for i, h in enumerate(horses):
             tags = list(h["gear_signals"]["tags"])
             if h["draw"] <= 3: tags.append("🎯 黃金內檔")
             elif h["draw"] >= 11: tags.append("⚠️ 外檔考驗")
 
-            scored_horses.append({
+            scored.append({
                 "race_id": race_id,
                 "horse_no": h["horse_no"], # 寫入真實馬號
                 "horse_code": h["horse_code"],
@@ -282,11 +286,10 @@ def run_upcoming():
                 "combo_synergy": round(float(feats[i]["combo_synergy"]) * 100, 1)
             })
 
-        scored_horses.sort(key=lambda x: x["win_probability"], reverse=True)
+        scored.sort(key=lambda x: x["win_probability"], reverse=True)
         final_payload = []
-        for rank, item in enumerate(scored_horses, 1):
+        for rank, item in enumerate(scored, 1):
             strat = "🎯 獨贏首選 / 連贏馬膽" if rank == 1 else ("⚡ 次選主力" if rank == 2 else ("🛡️ 連贏配腳" if rank <= 4 else ""))
-
             final_payload.append({
                 "race_id": item["race_id"],
                 "horse_no": item["horse_no"],
@@ -306,9 +309,9 @@ def run_upcoming():
             })
 
         supabase.table("race_predictions").upsert(final_payload, on_conflict="race_id,horse_code").execute()
-        print(f"  ✓ 第 {r} 場全量數據更新完成！")
+        print(f"  ✓ 第 {race_no} 場真實馬號/評分/配備寫入完畢！")
 
-    print("\n🎉 真實馬號、評分與配備已全數注入 Supabase！")
+    print("\n🎉 成功！所有真實馬號、評分與配備已全數注入資料庫！")
 
 if __name__ == "__main__":
     run_upcoming()
