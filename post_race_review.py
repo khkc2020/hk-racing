@@ -39,10 +39,10 @@ def send_email(subject, html_content):
 
 ### 1. GitHub Secrets 設定
 前往 GitHub **Settings** -> **Secrets and variables** -> **Actions**，新增：
-- `EMAIL_TO`: `bluecastlefc@yahoo.com.hk`
-- `EMAIL_USER`: 你的發信郵箱（如 Gmail 或 Yahoo）
-- `EMAIL_PASS`: 該郵箱的「應用程式專用密碼」(App Password)
-- `EMAIL_HOST`: 若用 Gmail 填 `smtp.gmail.com`；Yahoo 填 `smtp.mail.yahoo.com`
+- `EMAIL_TO`: mouseben620@gmail.com
+- `EMAIL_USER`: mouseben620@gmail.com
+- `EMAIL_PASS`: Az92299873
+- `EMAIL_HOST`: smtp.gmail.com
 
 ---
 
