@@ -1,33 +1,31 @@
-name: 自動排位預測與配備分析
+name: 賽馬 AI 自動預測與賽後複盤
 
 on:
   schedule:
-    # 逢星期一、星期四中午 12:30 (UTC 04:30) 排位公佈後自動運行
+    # 賽前排位公佈 (週一、週四 12:30 HK)
     - cron: "30 4 * * 1,4"
-  # 同時支援在 GitHub 網頁上點擊「Run workflow」手動隨時觸發
+    # 賽後複盤電郵 (週三 23:30 HK / 週日 19:00 HK)
+    - cron: "30 15 * * 3"
+    - cron: "0 11 * * 0"
   workflow_dispatch:
 
 jobs:
-  run-prediction:
+  run-pipeline:
     runs-on: ubuntu-latest
     steps:
-      - name: 檢出代碼庫
-        uses: actions/checkout@v4
-
-      - name: 配置 Python 環境
-        uses: actions/setup-python@v5
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
-          cache: "pip"
-
-      - name: 安裝預測核心依賴
-        run: |
-          python -m pip install --upgrade pip
-          pip install requests beautifulsoup4 pandas numpy supabase lightgbm
-
-      - name: 執行 AI 排位預測
+      - run: pip install requests beautifulsoup4 pandas numpy supabase lightgbm
+      - name: 執行任務
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+          EMAIL_TO: ${{ secrets.EMAIL_TO }}
+          EMAIL_USER: ${{ secrets.EMAIL_USER }}
+          EMAIL_PASS: ${{ secrets.EMAIL_PASS }}
+          EMAIL_HOST: ${{ secrets.EMAIL_HOST }}
         run: |
           python predict_upcoming.py
+          python post_race_review.py
