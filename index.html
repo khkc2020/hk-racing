@@ -1,239 +1,52 @@
-<!DOCTYPE html>
-<html lang="zh-HK">
-<head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>香港賽馬 AI 預測看盤系統</title>
-  <script src="https://cdn.tailwindcss.com"></script>
-  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
-  <script src="https://unpkg.com/vue@3/dist/vue.global.prod.js"></script>
-  <style>[v-cloak]{display:none;}</style>
-</head>
-<body class="bg-slate-100 text-slate-800 min-h-screen">
-  <div id="app" v-cloak class="max-w-4xl mx-auto px-3 sm:px-6 py-5">
-    
-    <!-- 頂部標題與按鈕 -->
-    <header class="flex items-center justify-between pb-3 border-b border-slate-200">
-      <div>
-        <h1 class="text-xl sm:text-2xl font-black text-slate-900 flex items-center gap-1.5">
-          <span>🏇</span> 香港賽馬 AI 看盤系統
-        </h1>
-        <p class="text-xs text-slate-500 mt-0.5">LightGBM 排序模型 • 20種官方全配備解析 • 騎練默契</p>
-      </div>
-      <div class="flex gap-2">
-        <button @click="showSettings=true" class="bg-white border text-slate-700 px-3 py-1.5 rounded-lg text-xs font-bold shadow-sm">⚙️ 設定</button>
-        <button @click="loadRaces" :disabled="loading" class="bg-emerald-600 text-white px-3.5 py-1.5 rounded-lg text-xs font-bold shadow-sm disabled:opacity-50">
-          {{ loading ? '載入中...' : '🔄 重新整理' }}
-        </button>
-      </div>
-    </header>
-
-    <!-- 最新賽事公告條 -->
-    <div v-if="latestInfo" class="mt-3 flex items-center justify-between bg-slate-900 text-white px-3.5 py-2 rounded-xl text-xs sm:text-sm font-bold shadow-sm">
-      <div class="flex items-center gap-2">
-        <span>📅 {{ latestInfo.date }}</span>
-        <span class="bg-amber-500 text-slate-950 px-2 py-0.5 rounded text-xs font-black">{{ latestInfo.venueName }}賽事</span>
-      </div>
-      <span class="text-xs text-slate-400 font-normal">全日共 {{ races.length }} 場</span>
+<!-- 🏆 本場 AI 專家投注推介組合看板 (新增於手機頂部) -->
+<div v-if="predictions.length >= 4" class="bg-gradient-to-br from-amber-500 via-amber-600 to-amber-700 rounded-2xl p-4 text-white shadow-lg mb-4">
+  <div class="flex items-center justify-between pb-2.5 border-b border-white/20">
+    <div class="flex items-center gap-2">
+      <span class="text-xl">🏆</span>
+      <span class="font-black text-sm tracking-wide">本場 AI 專家投注推介</span>
     </div>
-
-    <!-- 場次切換列 -->
-    <div class="my-2.5 flex items-center gap-1.5 overflow-x-auto pb-1">
-      <button v-for="r in races" :key="r.race_id" @click="selectRace(r)"
-        :class="selectedRaceId === r.race_id ? 'bg-emerald-600 text-white shadow-sm' : 'bg-white text-slate-700 border border-slate-200'"
-        class="px-3.5 py-1.5 rounded-lg text-xs sm:text-sm font-bold whitespace-nowrap transition">
-        第 {{ r.race_no }} 場
-      </button>
-    </div>
-
-    <!-- 當前場次概況卡片 -->
-    <div v-if="currentRace" class="bg-white rounded-xl border border-slate-200 p-3.5 shadow-sm mb-3 flex items-center justify-between text-xs sm:text-sm">
-      <div class="font-bold text-slate-900">
-        <span class="bg-emerald-600 text-white px-2 py-0.5 rounded-full mr-1.5 text-xs">第 {{ currentRace.race_no }} 場</span>
-        {{ currentRace.venue === 'ST' ? '沙田' : '跑馬地' }} • {{ currentRace.race_class }}
-      </div>
-      <div class="text-slate-500 font-medium">
-        {{ currentRace.track_type }} • {{ currentRace.distance }}米 {{ currentRace.course ? '• ' + currentRace.course + '賽道' : '' }}
-      </div>
-    </div>
-
-    <!-- 馬匹預測排行榜 -->
-    <div v-if="predictions.length > 0" class="space-y-2.5">
-      <div v-for="h in predictions" :key="h.horse_code"
-        :class="h.predicted_rank === 1 ? 'border-amber-400 bg-amber-50/50 ring-1 ring-amber-300' : 'border-slate-200 bg-white'"
-        class="p-3.5 rounded-xl border shadow-sm transition">
-        
-        <div class="flex items-start justify-between">
-          <div class="flex items-center gap-3">
-            <!-- 🌟 左邊大方塊：顯示真實下注馬號 (例如 5號) -->
-            <div class="w-10 h-10 rounded-xl bg-slate-900 text-white flex flex-col items-center justify-center flex-shrink-0 shadow-sm">
-              <span class="text-xs text-slate-400 scale-75 font-normal">馬號</span>
-              <span class="text-sm font-black -mt-1">{{ h.horse_no || '?' }}</span>
-            </div>
-
-            <div>
-              <div class="flex items-center gap-2">
-                <!-- 🌟 AI 預測排名徽章 -->
-                <span :class="{
-                  'bg-amber-500 text-white font-black': h.predicted_rank === 1,
-                  'bg-slate-400 text-white font-bold': h.predicted_rank === 2,
-                  'bg-amber-700 text-white font-bold': h.predicted_rank === 3,
-                  'bg-slate-200 text-slate-700 font-semibold': h.predicted_rank > 3
-                }" class="text-xs px-2 py-0.5 rounded-full">
-                  {{ h.predicted_rank === 1 ? '👑 AI 第 1 名' : (h.predicted_rank === 2 ? '🥈 AI 第 2 名' : (h.predicted_rank === 3 ? '🥉 AI 第 3 名' : 'AI 第 ' + h.predicted_rank + ' 名')) }}
-                </span>
-
-                <span class="font-black text-slate-900 text-base">{{ h.horse_name }}</span>
-                <span class="text-xs font-normal text-slate-400 font-mono">({{ h.horse_code }})</span>
-                <span class="text-xs bg-slate-100 text-slate-700 px-1.5 py-0.5 rounded font-bold">{{ h.draw }}檔</span>
-              </div>
-
-              <!-- 騎練、評分、配備 -->
-              <div class="text-xs text-slate-600 mt-1">
-                <span>{{ h.jockey }}</span>
-                <span v-if="h.trainer"> / {{ h.trainer }}</span>
-                <span class="mx-1">•</span>
-                <span class="font-bold text-slate-700">評分: {{ h.rating || '-' }}</span>
-                <span class="mx-1">•</span>
-                <span class="font-bold text-indigo-700">配備: {{ h.gear && h.gear !== '-' ? h.gear : '無' }}</span>
-              </div>
-            </div>
-          </div>
-
-          <!-- 右側勝率與長條圖 -->
-          <div class="text-right">
-            <div class="text-sm font-black" :class="h.predicted_rank === 1 ? 'text-amber-600' : 'text-slate-800'">
-              {{ h.win_probability }}%
-            </div>
-            <div class="w-16 bg-slate-100 rounded-full h-1.5 mt-1 overflow-hidden">
-              <div class="h-1.5 rounded-full" :class="h.predicted_rank===1 ? 'bg-amber-500':'bg-emerald-600'" :style="{ width: Math.min(100, h.win_probability * 2.5) + '%' }"></div>
-            </div>
-          </div>
-        </div>
-
-        <!-- 智慧標籤列 -->
-        <div class="mt-2.5 flex flex-wrap items-center gap-1.5 pt-2 border-t border-slate-100">
-          <span v-if="h.bet_strategy" class="bg-amber-100 text-amber-900 text-xs px-2 py-0.5 rounded-md font-bold">{{ h.bet_strategy }}</span>
-          <span v-if="h.combo_synergy" class="bg-blue-50 text-blue-700 text-xs px-2 py-0.5 rounded-md font-semibold">🤝 騎練勝率 {{ h.combo_synergy }}%</span>
-          <span v-for="(tag, idx) in h.smart_tags" :key="idx"
-            :class="{'bg-red-50 text-red-700 font-bold border border-red-200': tag.includes('B1')||tag.includes('大變革'), 'bg-purple-50 text-purple-700': tag.includes('舌帶'), 'bg-emerald-50 text-emerald-700': tag.includes('內檔'), 'bg-slate-100 text-slate-600': !tag.includes('B1')&&!tag.includes('舌帶')&&!tag.includes('內檔')}"
-            class="text-xs px-2 py-0.5 rounded-md">
-            {{ tag }}
-          </span>
-        </div>
-      </div>
-    </div>
-
-    <!-- 設定視窗 -->
-    <div v-if="showSettings" class="fixed inset-0 bg-black/50 backdrop-blur-sm flex items-center justify-center p-4 z-50">
-      <div class="bg-white rounded-2xl max-w-sm w-full p-5 shadow-2xl">
-        <h3 class="text-base font-bold text-slate-900 mb-3">⚙️ 連線設定</h3>
-        <label class="text-xs font-bold text-slate-700 block mb-1">Supabase URL:</label>
-        <input v-model="supabaseUrl" type="text" class="w-full text-xs p-2.5 border rounded-lg mb-3 outline-none" />
-        <label class="text-xs font-bold text-slate-700 block mb-1">Supabase Anon Key:</label>
-        <input v-model="supabaseKey" type="password" class="w-full text-xs p-2.5 border rounded-lg mb-4 outline-none" placeholder="貼上 anon key" />
-        <div class="flex justify-end gap-2">
-          <button @click="showSettings=false" class="px-3 py-1.5 text-xs text-slate-600">取消</button>
-          <button @click="saveSettings" class="px-4 py-1.5 text-xs font-bold bg-emerald-600 text-white rounded-lg">儲存並連線</button>
-        </div>
-      </div>
-    </div>
-
+    <span class="text-[11px] bg-white/20 px-2 py-0.5 rounded-full font-bold backdrop-blur-sm">精選心水</span>
   </div>
 
-  <script>
-    const { createApp, ref, computed, onMounted } = Vue;
-    createApp({
-      setup() {
-        const DEFAULT_URL = "https://rxmkohhgznfcnhdqegwq.supabase.co";
-        const supabaseUrl = ref(localStorage.getItem('sb_url') || DEFAULT_URL);
-        const supabaseKey = ref(localStorage.getItem('sb_key') || '');
-        const showSettings = ref(false);
-        const loading = ref(false);
-        const races = ref([]);
-        const selectedRaceId = ref('');
-        const predictions = ref([]);
-        let sbClient = null;
+  <div class="grid grid-cols-1 sm:grid-cols-3 gap-2.5 mt-3 text-xs">
+    <!-- 獨贏/位置心水 -->
+    <div class="bg-black/15 rounded-xl p-3 backdrop-blur-sm border border-white/10">
+      <div class="text-amber-100 font-bold mb-1 flex items-center gap-1">
+        <span>🎯</span> 獨贏 (WIN) / 位置 (PLA)
+      </div>
+      <div class="text-base font-black text-white mt-1">
+        {{ predictions[0].horse_no }}號 {{ predictions[0].horse_name }}
+      </div>
+      <div class="text-white/75 text-[11px] mt-0.5">
+        {{ predictions[0].jockey }} • 勝率 {{ predictions[0].win_probability }}%
+      </div>
+    </div>
 
-        const initSupabase = () => {
-          if (supabaseUrl.value && supabaseKey.value) {
-            sbClient = supabase.createClient(supabaseUrl.value, supabaseKey.value);
-            return true;
-          }
-          return false;
-        };
+    <!-- 連贏/位置Q組合 -->
+    <div class="bg-black/15 rounded-xl p-3 backdrop-blur-sm border border-white/10">
+      <div class="text-amber-100 font-bold mb-1 flex items-center gap-1">
+        <span>⚡</span> 連贏 (Q) / 位置Q (QP)
+      </div>
+      <div class="text-sm font-black text-white mt-1">
+        馬膽：{{ predictions[0].horse_no }}號 拖 {{ predictions[1].horse_no }}, {{ predictions[2].horse_no }}, {{ predictions[3].horse_no }}號
+      </div>
+      <div class="text-white/75 text-[11px] mt-0.5">
+        或 4匹互托複式 (共6注)
+      </div>
+    </div>
 
-        const saveSettings = () => {
-          localStorage.setItem('sb_url', supabaseUrl.value.trim());
-          localStorage.setItem('sb_key', supabaseKey.value.trim());
-          showSettings.value = false;
-          if (initSupabase()) loadRaces();
-        };
-
-        const latestInfo = computed(() => {
-          if (races.value.length === 0) return null;
-          const first = races.value[0];
-          return {
-            date: first.race_date,
-            venueName: first.venue === 'ST' ? '沙田' : '跑馬地'
-          };
-        });
-
-        const currentRace = computed(() => races.value.find(r => r.race_id === selectedRaceId.value) || null);
-
-        const loadRaces = async () => {
-          if (!initSupabase()) return;
-          loading.value = true;
-          try {
-            const { data: latestRow } = await sbClient
-              .from('races')
-              .select('race_date')
-              .order('race_date', { ascending: false })
-              .limit(1);
-
-            if (!latestRow || latestRow.length === 0) return;
-            const targetDate = latestRow[0].race_date;
-
-            const { data } = await sbClient
-              .from('races')
-              .select('*')
-              .eq('race_date', targetDate)
-              .order('race_no', { ascending: true });
-
-            races.value = data || [];
-            if (races.value.length > 0) selectRace(races.value[0]);
-          } finally { 
-            loading.value = false; 
-          }
-        };
-
-        const selectRace = async (r) => {
-          selectedRaceId.value = r.race_id;
-          if (!sbClient) return;
-          loading.value = true;
-          try {
-            const { data } = await sbClient
-              .from('race_predictions')
-              .select('*')
-              .eq('race_id', r.race_id)
-              .order('predicted_rank', { ascending: true });
-            predictions.value = data || [];
-          } finally { 
-            loading.value = false; 
-          }
-        };
-
-        onMounted(() => {
-          if (initSupabase()) loadRaces();
-        });
-
-        return { 
-          supabaseUrl, supabaseKey, showSettings, loading, 
-          races, latestInfo, currentRace, selectedRaceId, 
-          predictions, saveSettings, loadRaces, selectRace 
-        };
-      }
-    }).mount('#app');
-  </script>
-</body>
-</html>
+    <!-- 單T / 四連環高回報配腳 -->
+    <div class="bg-black/15 rounded-xl p-3 backdrop-blur-sm border border-white/10">
+      <div class="text-amber-100 font-bold mb-1 flex items-center gap-1">
+        <span>🔥</span> 單T / 四連環指南
+      </div>
+      <div class="text-sm font-black text-white mt-1">
+        精選：{{ predictions[0].horse_no }}, {{ predictions[1].horse_no }}, {{ predictions[2].horse_no }}, {{ predictions[3].horse_no }}
+        <span v-if="predictions[4]">, {{ predictions[4].horse_no }}</span>
+      </div>
+      <div class="text-white/75 text-[11px] mt-0.5">
+        核心實力前列部隊
+      </div>
+    </div>
+  </div>
+</div>
