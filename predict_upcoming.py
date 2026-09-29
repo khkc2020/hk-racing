@@ -14,18 +14,37 @@ HEADERS = {
     "Referer": "https://racing.hkjc.com/",
 }
 
-# 頂級騎練長效統計權重（杜絕小樣本偏差）
+# 頂級騎練長效基準權重
 ELITE_JOCKEYS = {
     "潘頓": 1.0, "布文": 0.92, "麥道朗": 0.95, "何澤堯": 0.88, 
     "田泰安": 0.82, "艾兆禮": 0.82, "霍宏聲": 0.78, "巴度": 0.72,
-    "蔡明紹": 0.70, "班德禮": 0.70, "梁家俊": 0.68
+    "蔡明紹": 0.70, "班德禮": 0.70, "梁家俊": 0.68, "艾道拿": 0.80
 }
 
 ELITE_TRAINERS = {
     "蔡約翰": 0.92, "方嘉柏": 0.88, "沈集成": 0.88, "呂健威": 0.86,
     "告東尼": 0.84, "廖康銘": 0.84, "伍鵬志": 0.85, "姚本輝": 0.80,
-    "文家良": 0.78, "賀賢": 0.76, "羅富全": 0.78
+    "文家良": 0.78, "賀賢": 0.76, "羅富全": 0.78, "游達榮": 0.80
 }
+
+def parse_form_score(form_str):
+    """解析 6 次近績走勢評分 (Form Momentum)"""
+    if not form_str or form_str in ("-", "--", ""):
+        return 0.0
+    runs = form_str.split("/")
+    score = 0.0
+    decay = 1.0
+    for r in reversed(runs[-3:]):  # 取最近 3 仗
+        r = r.strip()
+        if r.isdigit():
+            p = int(r)
+            if p == 1: score += 0.40 * decay
+            elif p == 2: score += 0.25 * decay
+            elif p == 3: score += 0.15 * decay
+            elif p <= 5: score += 0.05 * decay
+            else: score -= 0.10 * decay
+        decay *= 0.8
+    return score
 
 def parse_gear_features(gear_str):
     if not gear_str or gear_str == "-":
@@ -35,7 +54,7 @@ def parse_gear_features(gear_str):
     bonus = 0.0
 
     if re.search(r"B1|V1|PC1|P1", g):
-        tags.append("👓 首次眼罩 (配備變革)")
+        tags.append("👓 首次眼罩 (變革)")
         bonus += 0.08
     elif re.search(r"B2|V2", g):
         tags.append("👓 重戴眼罩")
@@ -62,7 +81,6 @@ def parse_gear_features(gear_str):
     return {"tags": tags, "bonus": bonus}
 
 def detect_upcoming_meeting():
-    """自動探測馬會最新即將舉行的賽事日期與場地"""
     url = "https://racing.hkjc.com/racing/information/Chinese/Racing/RaceCard.aspx"
     try:
         r = requests.get(url, headers=HEADERS, timeout=10)
@@ -81,7 +99,6 @@ def detect_upcoming_meeting():
     except Exception as e:
         print(f"自動探測賽期提示: {e}")
 
-    # 備援預設：10月1日國慶賽馬日 (沙田日賽)
     return "2026-10-01", "2026/10/01", "ST"
 
 def fetch_race_horses(date_str, venue, race_no):
@@ -115,7 +132,7 @@ def fetch_race_horses(date_str, venue, race_no):
     course = course_m.group(1) if course_m else None
 
     race_class = "第四班"
-    for c in ("第一班", "第二班", "第三班", "第四班", "第五班"):
+    for c in ("一級賽", "二級賽", "三級賽", "第一班", "第二班", "第三班", "第四班", "第五班"):
         if c in race_text: race_class = c; break
 
     runners_map = {}
@@ -141,10 +158,18 @@ def fetch_race_horses(date_str, venue, race_no):
                 h_idx["draw"] = i
             elif "練馬師" in h and "trainer" not in h_idx:
                 h_idx["trainer"] = i
-            elif "評分" in h and "國際" not in h and "+/-" not in h and "rating" not in h_idx:
-                h_idx["rating"] = i
+            elif "評分" in h and "+/-" not in h:
+                # 兼容本地評分與分級賽國際評分
+                if "國際" in h:
+                    h_idx["intl_rating"] = i
+                elif "rating" not in h_idx:
+                    h_idx["rating"] = i
+            elif ("近績" in h or "6次近績" in h) and "form" not in h_idx:
+                h_idx["form"] = i
             elif "配備" in h and "gear" not in h_idx:
                 h_idx["gear"] = i
+            elif "排位體重" in h and "decl_wt" not in h_idx:
+                h_idx["decl_wt"] = i
 
         if "horse_no" not in h_idx: continue
 
@@ -161,11 +186,13 @@ def fetch_race_horses(date_str, venue, race_no):
                     "horse_name": f"馬匹{h_no}",
                     "horse_code": f"H{h_no}",
                     "draw": 7,
-                    "weight": 120.0,
+                    "weight": 122.0,
                     "jockey": "",
                     "trainer": "",
-                    "rating": 40,
-                    "gear": "-"
+                    "rating": 60,
+                    "form": "-",
+                    "gear": "-",
+                    "declared_weight": None
                 }
 
             if "horse_name" in h_idx and h_idx["horse_name"] < len(cols):
@@ -196,17 +223,31 @@ def fetch_race_horses(date_str, venue, race_no):
                 val = cols[h_idx["trainer"]].strip()
                 if val and val != "-": runners_map[h_no]["trainer"] = val
 
-            if "rating" in h_idx and h_idx["rating"] < len(cols):
-                val = cols[h_idx["rating"]].strip()
-                if val.isdigit(): runners_map[h_no]["rating"] = int(val)
+            # 評分切換：優先本土評分，分級賽若無則取國際評分
+            rat = None
+            if "rating" in h_idx and cols[h_idx["rating"]].isdigit():
+                rat = int(cols[h_idx["rating"]])
+            elif "intl_rating" in h_idx and cols[h_idx["intl_rating"]].isdigit():
+                rat = int(cols[h_idx["intl_rating"]])
+            if rat is not None:
+                runners_map[h_no]["rating"] = rat
+
+            if "form" in h_idx and h_idx["form"] < len(cols):
+                runners_map[h_no]["form"] = cols[h_idx["form"]].strip()
 
             if "gear" in h_idx and h_idx["gear"] < len(cols):
                 val = cols[h_idx["gear"]].strip()
                 if val and val not in ("--", "-"): runners_map[h_no]["gear"] = val
 
+            if "decl_wt" in h_idx and h_idx["decl_wt"] < len(cols):
+                raw_dw = cols[h_idx["decl_wt"]].strip()
+                if raw_dw.isdigit():
+                    runners_map[h_no]["declared_weight"] = int(raw_dw)
+
     horses = []
     for h_no, h in sorted(runners_map.items()):
         h["gear_info"] = parse_gear_features(h["gear"])
+        h["form_score"] = parse_form_score(h["form"])
         horses.append(h)
 
     meta = {"venue": venue, "distance": distance, "track_type": track, "course": course, "race_class": race_class}
@@ -219,8 +260,7 @@ def run_upcoming():
     total_races = 0
     for race_no in range(1, 12):
         meta, horses = fetch_race_horses(date_hkjc, venue, race_no)
-        if not meta or not horses:
-            break
+        if not meta or not horses: break
 
         total_races += 1
         race_id = f"{target_date.replace('-', '')}_{venue}_{race_no:02d}"
@@ -232,7 +272,6 @@ def run_upcoming():
             "race_class": meta["race_class"]
         }).execute()
 
-        # 核心評估：評分實力(35%) + 頂級騎練(30%) + 檔位利弊(15%) + 負磅優勢(15%) + 配備微調(5%)
         ratings = [float(h["rating"]) for h in horses]
         avg_r = sum(ratings) / len(ratings) if ratings else 40.0
         weights = [float(h["weight"]) for h in horses]
@@ -240,27 +279,35 @@ def run_upcoming():
 
         scores = []
         for h in horses:
-            r_score = (float(h["rating"]) - avg_r) / 10.0
-            w_score = (avg_w - float(h["weight"])) / 10.0
+            # 1. 讓磅公平性平衡（防止 1號頂磅馬數學霸榜）：
+            # 評分帶來基準實力，負磅帶來阻力負擔 (135頂磅扣分嚴厲)
+            r_diff = (float(h["rating"]) - avg_r) / 10.0
+            w_penalty = (float(h["weight"]) - avg_w) / 10.0
+            handicap_efficiency = (r_diff * 0.20) - (w_penalty * 0.25)
 
+            # 2. 6次近績戰意走勢 (30%) - 當弗馬大幅受惠
+            form_s = h["form_score"]
+
+            # 3. 檔位利弊 (15%)
             draw = h["draw"]
-            if draw <= 3: d_score = 0.50
-            elif draw <= 7: d_score = 0.20
+            if draw <= 3: d_score = 0.35
+            elif draw <= 7: d_score = 0.15
             elif draw <= 10: d_score = -0.10
-            else: d_score = -0.40
+            else: d_score = -0.30
 
+            # 4. 頂級騎練長效即戰力 (20%)
             j_score = ELITE_JOCKEYS.get(h["jockey"], 0.40)
             t_score = ELITE_TRAINERS.get(h["trainer"], 0.45)
-            jt_score = (j_score * 0.70 + t_score * 0.30)
+            jt_score = (j_score * 0.65 + t_score * 0.35)
 
+            # 5. 配備變革微調 (5%)
             g_score = h["gear_info"]["bonus"]
 
-            total = (r_score * 0.35) + (w_score * 0.15) + (d_score * 0.15) + (jt_score * 0.30) + (g_score * 0.05)
+            total = handicap_efficiency + form_s + d_score + (jt_score * 0.25) + g_score
             scores.append(total)
 
-        # 溫度縮放 Softmax 計算勝率
         scores = np.array(scores)
-        exp_s = np.exp(scores * 2.0)
+        exp_s = np.exp(scores * 1.8)
         probs = (exp_s / exp_s.sum()) * 100.0
 
         scored = []
@@ -268,8 +315,10 @@ def run_upcoming():
             tags = list(h["gear_info"]["tags"])
             if h["draw"] <= 3: tags.append("🎯 黃金內檔")
             elif h["draw"] >= 11: tags.append("⚠️ 外檔考驗")
-            if h["jockey"] in ELITE_JOCKEYS: tags.append("🔥 頂級騎師")
-            tags.append("⏳ 體力黃金期")
+            if h["weight"] <= 118: tags.append("🪶 輕磅突擊")
+            elif h["weight"] >= 134: tags.append("🏋️ 頂磅考驗")
+            if h["form_score"] >= 0.30: tags.append("🔥 近況大勇")
+            if h["jockey"] in ELITE_JOCKEYS: tags.append("⭐ 頂級騎師")
 
             j_pct = round(ELITE_JOCKEYS.get(h["jockey"], 0.40) * 100, 1)
 
@@ -311,7 +360,7 @@ def run_upcoming():
         supabase.table("race_predictions").delete().eq("race_id", race_id).execute()
         supabase.table("race_predictions").insert(final_payload).execute()
         top_h = scored[0]
-        print(f"  ✓ 第 {race_no} 場完成 (出賽: {len(horses)} 匹, 第一首選: {top_h['horse_name']} {top_h['horse_no']}號 預測勝率:{top_h['win_probability']}%)")
+        print(f"  ✓ 第 {race_no} 場完成 ({horses[0]['horse_name']}等 {len(horses)} 匹, 推薦首選: {top_h['horse_no']}號 {top_h['horse_name']} 勝率:{top_h['win_probability']}%)")
 
     print(f"\n🎉 成功！已完成 {target_date} 共 {total_races} 場賽事預測並寫入資料庫！")
 
