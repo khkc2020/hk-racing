@@ -116,11 +116,13 @@ def fetch_race_horses(date_str, venue, race_no):
     course_m = re.search(r'\"([A-C\+3]+)\"\s*賽道', race_text)
     course = course_m.group(1) if course_m else None
 
-    # 2. 班次 race_class 補全
-    class_m = re.search(r'(第[一二三四五]班|Class\s*[1-5]|Group\s*[1-3]|國際[一二三]級賽|[一二三]級賽|新馬賽|條件限制賽)', race_text)
+    # 2. 班次 race_class 嚴格正則匹配 (精準排除導航欄「二級賽」干擾)
+    class_m = re.search(r'第\s*\d+\s*場\s*[-–—]\s*(國際[一二三]級賽|[一二三]級賽|第[一二三四五]班|新馬賽|條件限制賽)', race_text)
+    if not class_m:
+        class_m = re.search(r'(第[一二三四五]班)', race_text)
     race_class = class_m.group(1) if class_m else "第四班"
 
-    # 3. 場地狀況 going 補全
+    # 3. 場地狀況 going
     going_m = re.search(r'場地狀況\s*[:：]\s*([\u4e00-\u9fa5]+)', race_text)
     if not going_m:
         going_m = re.search(r'(好地至快地|好地|快地|好地至黏地|黏地|爛地|濕慢地|例常)', race_text)
@@ -226,7 +228,6 @@ def fetch_race_horses(date_str, venue, race_no):
                 val = cols[h_idx["gear"]].strip()
                 if val and val not in ("--", "-"): runners_map[h_no]["gear"] = val
 
-            # 4. 上賽距今日數 rest_days 錄入
             if "rest_days" in h_idx and h_idx["rest_days"] < len(cols):
                 raw_rd = cols[h_idx["rest_days"]].strip()
                 if raw_rd.isdigit():
@@ -258,7 +259,7 @@ def run_upcoming():
         total_races += 1
         race_id = f"{target_date.replace('-', '')}_{venue}_{race_no:02d}"
 
-        # 寫入 races 主表 (已補齊 race_class 與 going)
+        # 寫入 races 主表 (已徹底修正 race_class，真實反映每場班次)
         supabase.table("races").upsert({
             "race_id": race_id,
             "race_date": target_date,
@@ -331,7 +332,6 @@ def run_upcoming():
         scored.sort(key=lambda x: x["win_probability"], reverse=True)
         final_payload = []
         for rank, item in enumerate(scored, 1):
-            # 前 4 名給予明確策略，5名以後保持 empty (淘汰/未入推薦)
             strat = "🎯 獨贏首選 / 連贏馬膽" if rank == 1 else ("⚡ 次選主力" if rank == 2 else ("🛡️ 連贏配腳" if rank <= 4 else ""))
             final_payload.append({
                 "race_id": item["race_id"],
