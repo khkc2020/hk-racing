@@ -1,0 +1,29 @@
+name: 香港賽馬 歷史賽季全量大數據歸檔
+
+on:
+  workflow_dispatch: # 支援在 GitHub 網頁上手動點擊啟動
+
+jobs:
+  backfill:
+    runs-on: ubuntu-latest
+    timeout-minutes: 360 # 最長允許雲端執行 6 小時
+
+    steps:
+      - name: 下載專案庫
+        uses: actions/checkout@v3
+
+      - name: 配置 Python 環境
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+
+      - name: 安裝依賴套件
+        run: |
+          pip install requests beautifulsoup4 numpy pandas supabase
+
+      - name: 執行歷史大數據全量歸檔
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+        run: |
+          python backfill_past_seasons.py
