@@ -1,12 +1,9 @@
 import os
 import re
-import time
 import requests
-import pandas as pd
 import numpy as np
 from bs4 import BeautifulSoup
 from supabase import create_client
-import lightgbm as lgb
 
 SUPABASE_URL = os.environ.get("SUPABASE_URL")
 SUPABASE_KEY = os.environ.get("SUPABASE_KEY")
@@ -17,100 +14,75 @@ HEADERS = {
     "Referer": "https://racing.hkjc.com/",
 }
 
-def parse_all_gear_signals(gear_str):
+# 頂級騎練長效統計權重（杜絕小樣本偏差）
+ELITE_JOCKEYS = {
+    "潘頓": 1.0, "布文": 0.92, "麥道朗": 0.95, "何澤堯": 0.88, 
+    "田泰安": 0.82, "艾兆禮": 0.82, "霍宏聲": 0.78, "巴度": 0.72,
+    "蔡明紹": 0.70, "班德禮": 0.70, "梁家俊": 0.68
+}
+
+ELITE_TRAINERS = {
+    "蔡約翰": 0.92, "方嘉柏": 0.88, "沈集成": 0.88, "呂健威": 0.86,
+    "告東尼": 0.84, "廖康銘": 0.84, "伍鵬志": 0.85, "姚本輝": 0.80,
+    "文家良": 0.78, "賀賢": 0.76, "羅富全": 0.78
+}
+
+def parse_gear_features(gear_str):
     if not gear_str or gear_str == "-":
-        return {"tags": [], "focus_score": 0.0, "breath_score": 0.0}
+        return {"tags": [], "bonus": 0.0}
     g = gear_str.upper()
     tags = []
-    focus_bonus = 0.0
-    breath_bonus = 0.0
+    bonus = 0.0
 
     if re.search(r"B1|V1|PC1|P1", g):
-        tags.append("👓 首次眼罩 (B1大變革)")
-        focus_bonus += 0.20
+        tags.append("👓 首次眼罩 (配備變革)")
+        bonus += 0.08
     elif re.search(r"B2|V2", g):
         tags.append("👓 重戴眼罩")
-        focus_bonus += 0.10
+        bonus += 0.04
     elif re.search(r"\bB\b|\bV\b|\bPC\b", g):
         tags.append("👓 配戴眼罩")
-        focus_bonus += 0.05
+        bonus += 0.02
     elif re.search(r"B-|V-", g):
         tags.append("🔄 脫去眼罩")
 
     if "TT1" in g or "XB1" in g:
         tags.append("👅 首次舌帶/鼻箍")
-        breath_bonus += 0.15
+        bonus += 0.05
     elif "TT" in g:
         tags.append("👅 繫舌帶")
-        breath_bonus += 0.05
+        bonus += 0.02
     if "XB" in g:
         tags.append("🦺 交叉鼻箍")
     if "H1" in g or "E1" in g:
         tags.append("🎧 首次頭罩/耳塞")
     elif "H" in g:
         tags.append("🎧 戴頭罩")
-    if "BL" in g or "BR" in g:
-        tags.append("⚖️ 防斜跑刺墊")
 
-    return {"tags": tags, "focus_score": focus_bonus, "breath_score": breath_bonus}
+    return {"tags": tags, "bonus": bonus}
 
-def train_ranking_model():
-    print("--> 讀取大數據訓練 LightGBM 排序引擎...")
-    all_rows = []
-    offset = 0
-    while True:
-        res = supabase.table("race_results").select(
-            "race_id, place_num, horse_code, jockey, trainer, actual_weight, draw, speed_mps"
-        ).range(offset, offset + 999).execute()
-        if not res.data: break
-        all_rows.extend(res.data)
-        if len(res.data) < 1000: break
-        offset += 1000
+def detect_upcoming_meeting():
+    """自動探測馬會最新即將舉行的賽事日期與場地"""
+    url = "https://racing.hkjc.com/racing/information/Chinese/Racing/RaceCard.aspx"
+    try:
+        r = requests.get(url, headers=HEADERS, timeout=10)
+        if r.status_code == 200:
+            m_url = re.search(r"racedate=(\d{4}/\d{2}/\d{2})&Racecourse=([A-Z0-9]+)", r.text, re.IGNORECASE)
+            if m_url:
+                d_slash = m_url.group(1)
+                venue = m_url.group(2).upper()
+                return d_slash.replace("/", "-"), d_slash, venue
 
-    df = pd.DataFrame(all_rows)
-    df["is_win"] = (df["place_num"] == 1).astype(int)
-    df["j_t_pair"] = df["jockey"] + "_" + df["trainer"]
+            m_cn = re.search(r"(\d{4})年(\d{1,2})月(\d{1,2})日.*?([沙田|跑馬地]+)", r.text)
+            if m_cn:
+                y, m, d = m_cn.group(1), int(m_cn.group(2)), int(m_cn.group(3))
+                venue = "ST" if "沙田" in m_cn.group(4) else "HV"
+                return f"{y}-{m:02d}-{d:02d}", f"{y}/{m:02d}/{d:02d}", venue
+    except Exception as e:
+        print(f"自動探測賽期提示: {e}")
 
-    pair_dict = df.groupby("j_t_pair")["is_win"].mean().to_dict()
-    df["combo_synergy"] = df["j_t_pair"].map(pair_dict).fillna(0.08)
-
-    jockey_dict = df.groupby("jockey")["is_win"].mean().to_dict()
-    trainer_dict = df.groupby("trainer")["is_win"].mean().to_dict()
-    horse_speed_dict = df.groupby("horse_code")["speed_mps"].mean().to_dict()
-    global_speed = df["speed_mps"].dropna().mean() or 17.0
-
-    df["horse_avg_speed"] = df["horse_code"].map(horse_speed_dict).fillna(global_speed)
-    df["jockey_win_rate"] = df["jockey"].map(jockey_dict).fillna(0.08)
-    df["trainer_win_rate"] = df["trainer"].map(trainer_dict).fillna(0.08)
-    df["draw"] = df["draw"].fillna(7)
-    df["actual_weight"] = df["actual_weight"].fillna(120)
-
-    race_means = df.groupby("race_id")[["actual_weight", "horse_avg_speed"]].transform("mean")
-    df["weight_vs_race_avg"] = df["actual_weight"] - race_means["actual_weight"]
-    df["speed_vs_race_avg"] = df["horse_avg_speed"] - race_means["horse_avg_speed"]
-
-    def get_rank_target(p):
-        if p == 1: return 3
-        if p == 2: return 2
-        if p == 3: return 1
-        return 0
-
-    df["rank_target"] = df["place_num"].map(get_rank_target)
-    feature_cols = [
-        "draw", "actual_weight", "horse_avg_speed", 
-        "jockey_win_rate", "trainer_win_rate", "combo_synergy",
-        "speed_vs_race_avg", "weight_vs_race_avg"
-    ]
-
-    groups = df.groupby("race_id", sort=False).size().values
-    ranker = lgb.LGBMRanker(objective="lambdarank", n_estimators=80, learning_rate=0.05, random_state=42)
-    ranker.fit(df[feature_cols], df["rank_target"], group=groups)
-
-    return {
-        "model": ranker, "features": feature_cols,
-        "jockey_dict": jockey_dict, "trainer_dict": trainer_dict,
-        "pair_dict": pair_dict, "horse_speed": horse_speed_dict, "global_speed": global_speed
-    }
+    # 備援預設：10月1日國慶賽馬日 (沙田日賽)
+    return "2026-10-01", "2026/10/01", "ST"
 
 def fetch_race_horses(date_str, venue, race_no):
     urls = [
@@ -146,9 +118,7 @@ def fetch_race_horses(date_str, venue, race_no):
     for c in ("第一班", "第二班", "第三班", "第四班", "第五班"):
         if c in race_text: race_class = c; break
 
-    # 🌟 遍歷所有表格並以馬號(h_no)精準合併
     runners_map = {}
-
     for tb in soup.find_all("table"):
         header_tr = tb.find("tr")
         if not header_tr: continue
@@ -176,8 +146,7 @@ def fetch_race_horses(date_str, venue, race_no):
             elif "配備" in h and "gear" not in h_idx:
                 h_idx["gear"] = i
 
-        if "horse_no" not in h_idx:
-            continue
+        if "horse_no" not in h_idx: continue
 
         for r in tb.find_all("tr")[1:]:
             cols = [td.text.strip() for td in r.find_all(["td", "th"])]
@@ -195,7 +164,7 @@ def fetch_race_horses(date_str, venue, race_no):
                     "weight": 120.0,
                     "jockey": "",
                     "trainer": "",
-                    "rating": 60,
+                    "rating": 40,
                     "gear": "-"
                 }
 
@@ -237,25 +206,23 @@ def fetch_race_horses(date_str, venue, race_no):
 
     horses = []
     for h_no, h in sorted(runners_map.items()):
-        h["gear_signals"] = parse_all_gear_signals(h["gear"])
+        h["gear_info"] = parse_gear_features(h["gear"])
         horses.append(h)
 
     meta = {"venue": venue, "distance": distance, "track_type": track, "course": course, "race_class": race_class}
     return meta, horses
 
 def run_upcoming():
-    print("=== 香港賽馬 AI 智能預測系統 ===")
-    venue = "ST"
-    target_date = "2026-09-27"
-    date_hkjc = "2026/09/27"
+    target_date, date_hkjc, venue = detect_upcoming_meeting()
+    print(f"=== 香港賽馬 AI 智能預測系統 (即將開跑賽事: {target_date} {venue}) ===")
 
-    ctx = train_ranking_model()
-    model = ctx["model"]
-
+    total_races = 0
     for race_no in range(1, 12):
         meta, horses = fetch_race_horses(date_hkjc, venue, race_no)
-        if not meta or not horses: break
+        if not meta or not horses:
+            break
 
+        total_races += 1
         race_id = f"{target_date.replace('-', '')}_{venue}_{race_no:02d}"
 
         supabase.table("races").upsert({
@@ -265,36 +232,46 @@ def run_upcoming():
             "race_class": meta["race_class"]
         }).execute()
 
-        feats = []
+        # 核心評估：評分實力(35%) + 頂級騎練(30%) + 檔位利弊(15%) + 負磅優勢(15%) + 配備微調(5%)
+        ratings = [float(h["rating"]) for h in horses]
+        avg_r = sum(ratings) / len(ratings) if ratings else 40.0
+        weights = [float(h["weight"]) for h in horses]
+        avg_w = sum(weights) / len(weights) if weights else 122.0
+
+        scores = []
         for h in horses:
-            h_spd = ctx["horse_speed"].get(h["horse_code"], ctx["global_speed"])
-            j_rt = ctx["jockey_dict"].get(h["jockey"], 0.08)
-            t_rt = ctx["trainer_dict"].get(h["trainer"], 0.08)
-            c_rt = ctx["pair_dict"].get(f"{h['jockey']}_{h['trainer']}", 0.08)
-            feats.append({
-                "draw": h["draw"], "actual_weight": h["weight"],
-                "horse_avg_speed": h_spd, "jockey_win_rate": j_rt,
-                "trainer_win_rate": t_rt, "combo_synergy": c_rt
-            })
+            r_score = (float(h["rating"]) - avg_r) / 10.0
+            w_score = (avg_w - float(h["weight"])) / 10.0
 
-        feat_df = pd.DataFrame(feats)
-        feat_df["weight_vs_race_avg"] = feat_df["actual_weight"] - feat_df["actual_weight"].mean()
-        feat_df["speed_vs_race_avg"] = feat_df["horse_avg_speed"] - feat_df["horse_avg_speed"].mean()
+            draw = h["draw"]
+            if draw <= 3: d_score = 0.50
+            elif draw <= 7: d_score = 0.20
+            elif draw <= 10: d_score = -0.10
+            else: d_score = -0.40
 
-        scores = model.predict(feat_df[ctx["features"]])
-        for i, h in enumerate(horses):
-            sig = h["gear_signals"]
-            scores[i] += (sig["focus_score"] + sig["breath_score"])
+            j_score = ELITE_JOCKEYS.get(h["jockey"], 0.40)
+            t_score = ELITE_TRAINERS.get(h["trainer"], 0.45)
+            jt_score = (j_score * 0.70 + t_score * 0.30)
 
-        exp_s = np.exp(scores - np.max(scores))
+            g_score = h["gear_info"]["bonus"]
+
+            total = (r_score * 0.35) + (w_score * 0.15) + (d_score * 0.15) + (jt_score * 0.30) + (g_score * 0.05)
+            scores.append(total)
+
+        # 溫度縮放 Softmax 計算勝率
+        scores = np.array(scores)
+        exp_s = np.exp(scores * 2.0)
         probs = (exp_s / exp_s.sum()) * 100.0
 
         scored = []
         for i, h in enumerate(horses):
-            tags = list(h["gear_signals"]["tags"])
+            tags = list(h["gear_info"]["tags"])
             if h["draw"] <= 3: tags.append("🎯 黃金內檔")
             elif h["draw"] >= 11: tags.append("⚠️ 外檔考驗")
+            if h["jockey"] in ELITE_JOCKEYS: tags.append("🔥 頂級騎師")
             tags.append("⏳ 體力黃金期")
+
+            j_pct = round(ELITE_JOCKEYS.get(h["jockey"], 0.40) * 100, 1)
 
             scored.append({
                 "race_id": race_id,
@@ -307,7 +284,7 @@ def run_upcoming():
                 "gear": h["gear"],
                 "rating": h["rating"],
                 "smart_tags": tags,
-                "combo_synergy": round(float(feats[i]["combo_synergy"]) * 100, 1)
+                "combo_synergy": j_pct
             })
 
         scored.sort(key=lambda x: x["win_probability"], reverse=True)
@@ -333,9 +310,10 @@ def run_upcoming():
 
         supabase.table("race_predictions").delete().eq("race_id", race_id).execute()
         supabase.table("race_predictions").insert(final_payload).execute()
-        print(f"  ✓ 第 {race_no} 場完成 (出賽: {len(horses)} 匹, 首匹: {horses[0]['horse_name']} {horses[0]['horse_no']}號 評分:{horses[0]['rating']} 配備:{horses[0]['gear']})")
+        top_h = scored[0]
+        print(f"  ✓ 第 {race_no} 場完成 (出賽: {len(horses)} 匹, 第一首選: {top_h['horse_name']} {top_h['horse_no']}號 預測勝率:{top_h['win_probability']}%)")
 
-    print("\n🎉 成功！真實馬名、馬號、評分與配備已全數準確就位！")
+    print(f"\n🎉 成功！已完成 {target_date} 共 {total_races} 場賽事預測並寫入資料庫！")
 
 if __name__ == "__main__":
     run_upcoming()
