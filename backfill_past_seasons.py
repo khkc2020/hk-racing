@@ -7,7 +7,7 @@ from bs4 import BeautifulSoup
 from supabase import create_client
 
 SUPABASE_URL = "https://rxmkohhgznfcnhdqegwq.supabase.co"
-SUPABASE_KEY = "sb_secret_T28pAzot4qEiyrOCT4_ttA_85CUc2wA"
+SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InJ4bWtvaGhnem5mY25oZHFlZ3dxIiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc5MDQ5OTk2OCwiZXhwIjoyMTA2MDc1OTY4fQ.QUqbXyvQuVuulKbiaI0jC20aUw21l1vd4pjXWEryjuI"
 supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
 
 HEADERS = {
