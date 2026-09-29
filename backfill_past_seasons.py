@@ -6,8 +6,8 @@ from datetime import datetime, timedelta
 from bs4 import BeautifulSoup
 from supabase import create_client
 
-SUPABASE_URL = os.environ.get("SUPABASE_URL")
-SUPABASE_KEY = os.environ.get("SUPABASE_KEY")
+SUPABASE_URL = "https://rxmkohhgznfcnhdqegwq.supabase.co"
+SUPABASE_KEY = "sb_secret_T28pAzot4qEiyrOCT4_ttA_85CUc2wA"
 supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
 
 HEADERS = {
