@@ -71,7 +71,7 @@ def detect_upcoming_meeting():
         r = requests.get(url, headers=HEADERS, timeout=10)
         if r.status_code == 200:
             # 1. 檢查 URL 參數
-            m_url = re.search(r"racedate=(\d{4}/\d{2}/\\d{2})&Racecourse=([A-Z0-9]+)", r.text, re.IGNORECASE)
+            m_url = re.search(r"racedate=(\d{4}/\d{2}/\d{2})&Racecourse=([A-Z0-9]+)", r.text, re.IGNORECASE)
             if m_url:
                 d_slash = m_url.group(1)
                 venue = m_url.group(2).upper()
@@ -87,51 +87,79 @@ def detect_upcoming_meeting():
     except Exception as e:
         print(f"自動探測賽期連線警示: {e}")
 
-    # Fallback 預設日
+    # Fallback 預設日 (2026-10-01 沙田日賽)
     return "2026-10-01", "2026/10/01", "ST"
 
 def fetch_live_odds(date_str, venue, race_no):
     """
-    向馬會投注端點請求該場次的獨贏 (WIN) 賠率
-    返回格式: {馬號(int): 賠率(float)}
+    精準從馬會官方投注頁面抓取各馬匹獨贏 (WIN) 即時賠率
+    返回格式: {馬號(int): 獨贏賠率(float)}
     """
     urls = [
-        f"https://bet.hkjc.com/racing/getJSON.aspx?type=win&date={date_str}&venue={venue}&raceno={race_no}",
-        f"https://bet.hkjc.com/racing/getJSON.aspx?type=winpla&date={date_str}&venue={venue}&raceno={race_no}"
+        f"https://bet.hkjc.com/ch/racing/wp/{date_str}/{venue}/{race_no}",
+        f"https://bet.hkjc.com/en/racing/wp/{date_str}/{venue}/{race_no}",
+        f"https://bet.hkjc.com/racing/pages/odds_wp.aspx?lang=ch&date={date_str}&venue={venue}&raceno={race_no}"
     ]
     odds_headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-        "Referer": "https://bet.hkjc.com/"
+        "Referer": "https://bet.hkjc.com/",
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"
     }
 
     odds_map = {}
     for url in urls:
         try:
-            r = requests.get(url, headers=odds_headers, timeout=8)
+            r = requests.get(url, headers=odds_headers, timeout=10)
             if r.status_code == 200 and r.text:
-                txt = r.text
-                # 情況 1: JSON 格式解析
-                try:
-                    data = json.loads(txt)
-                    if isinstance(data, dict):
-                        for v in data.values():
-                            if isinstance(v, str) and "=" in v:
-                                for h_no, o in re.findall(r"\b(\d{1,2})=(\d+(?:\.\d+)?)\b", v):
-                                    odds_map[int(h_no)] = float(o)
-                        if not odds_map:
-                            for k, v in data.items():
-                                if k.isdigit():
-                                    try: odds_map[int(k)] = float(v)
-                                    except Exception: pass
-                except Exception:
-                    pass
+                soup = BeautifulSoup(r.text, "html.parser")
 
-                # 情況 2: 正則直接匹配 1=3.5;2=12.0
+                # 策略 1: 解析 HTML 賠率表格 (直接抓取「馬號」與「獨贏」欄位)
+                for tb in soup.find_all("table"):
+                    rows = tb.find_all("tr")
+                    if not rows: continue
+                    headers = [th.text.strip().lower() for th in rows[0].find_all(["th", "td"])]
+
+                    h_idx, win_idx = -1, -1
+                    for i, h in enumerate(headers):
+                        if any(k in h for k in ["馬號", "馬匹編號"]) or h in ["no.", "no"]:
+                            if h_idx == -1: h_idx = i
+                        elif any(k in h for k in ["獨贏", "win"]):
+                            if "及" not in h and "&" not in h:  # 排除「獨贏及位置」
+                                if win_idx == -1: win_idx = i
+
+                    if h_idx != -1 and win_idx != -1:
+                        for row in rows[1:]:
+                            cols = [td.text.strip() for td in row.find_all(["td", "th"])]
+                            if len(cols) > max(h_idx, win_idx):
+                                raw_no = cols[h_idx]
+                                raw_odds = cols[win_idx]
+                                if raw_no.isdigit():
+                                    m_val = re.search(r"(\d+(?:\.\d+)?)", raw_odds)
+                                    if m_val:
+                                        val = float(m_val.group(1))
+                                        if 1.0 <= val <= 999.0:
+                                            odds_map[int(raw_no)] = val
+
+                # 策略 2: 若頁面由前端 script 注入，檢查嵌入的資料物件
                 if not odds_map:
-                    pairs = re.findall(r"\b(\d{1,2})=(\d+(?:\.\d+)?)\b", txt)
+                    for sc in soup.find_all("script"):
+                        txt = sc.text
+                        if "win" in txt.lower():
+                            try:
+                                data = json.loads(txt)
+                                if isinstance(data, dict):
+                                    for v in data.values():
+                                        if isinstance(v, str) and "=" in v:
+                                            for h_no, o in re.findall(r"\b(\d{1,2})=(\d+(?:\.\d+)?)\b", v):
+                                                odds_map[int(h_no)] = float(o)
+                            except Exception:
+                                pass
+
+                # 策略 3: 正則直接匹配 1=3.3;2=14.0
+                if not odds_map:
+                    pairs = re.findall(r"\b(\d{1,2})=(\d+(?:\.\d+)?)\b", r.text)
                     for h_no, o in pairs:
-                        h = int(h_no)
-                        val = float(o)
+                        h, val = int(h_no), float(o)
                         if 1 <= h <= 20 and 1.0 <= val <= 999.0:
                             odds_map[h] = val
 
@@ -286,7 +314,7 @@ def run_upcoming():
         total_races += 1
         race_id = f"{target_date.replace('-', '')}_{venue}_{race_no:02d}"
 
-        # 1. 抓取該場次即時獨贏賠率
+        # 1. 抓取該場次即時獨贏賠率 (直接爬取 bet.hkjc.com/ch/racing/wp/...)
         odds_map = fetch_live_odds(target_date, venue, race_no)
 
         # 2. 登記或更新賽事基本資料
@@ -332,7 +360,7 @@ def run_upcoming():
         for i, h in enumerate(horses):
             tags = list(h["gear_info"]["tags"])
             if h["draw"] <= 3: tags.append("🎯 黃金內檔")
-            elif h["draw"] >= 11: tags.append("⚠️ 外檔考驗")
+            elif h["draw"] >= 11: tags.append("⚠️️ 外檔考驗")
             if h["jockey"] in ELITE_JOCKEYS: tags.append("🔥 頂級騎師")
             tags.append("⏳ 體力黃金期")
 
@@ -357,7 +385,7 @@ def run_upcoming():
         for rank, item in enumerate(scored, 1):
             strat = "🎯 獨贏首選 / 連贏馬膽" if rank == 1 else ("⚡ 次選主力" if rank == 2 else ("🛡️ 連贏配腳" if rank <= 4 else ""))
             h_no = item["horse_no"]
-            odds = odds_map.get(h_no)  # 取得該馬號對應賠率 (未開盤則為 None)
+            odds = odds_map.get(h_no)  # 取得該馬號對應的即時獨贏賠率
 
             final_payload.append({
                 "race_id": item["race_id"],
@@ -374,7 +402,7 @@ def run_upcoming():
                 "smart_tags": item["smart_tags"],
                 "combo_synergy": item["combo_synergy"],
                 "bet_strategy": strat,
-                "market_odds": odds       # 🌟 寫入 Supabase numeric 欄位
+                "market_odds": odds       # 寫入 Supabase numeric 欄位
             })
 
         supabase.table("race_predictions").delete().eq("race_id", race_id).execute()
@@ -383,7 +411,7 @@ def run_upcoming():
         odds_count = sum(1 for p in final_payload if p.get("market_odds") is not None)
         print(f"  ✓ 第 {race_no} 場完成 (出賽: {len(horses)} 匹, 賠率匹配: {odds_count} 匹, 首選: {top_h['horse_name']} {top_h['horse_no']}號 預測勝率:{top_h['win_probability']}%)")
 
-    print(f"\n🎉 成功！已完成 {target_date} 共 {total_races} 場賽事預測與賠率更新並寫入 Supabase！")
+    print(f"\n🎉 成功！已完成 {target_date} 共 {total_races} 場賽事預測與即時賠率更新！")
 
 if __name__ == "__main__":
     run_upcoming()
