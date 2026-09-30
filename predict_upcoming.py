@@ -23,13 +23,15 @@ HEADERS = {
 ELITE_JOCKEYS = {
     "潘頓": 1.0, "布文": 0.92, "麥道朗": 0.95, "何澤堯": 0.88, 
     "田泰安": 0.82, "艾兆禮": 0.82, "霍宏聲": 0.78, "巴度": 0.72,
-    "蔡明紹": 0.70, "班德禮": 0.70, "梁家俊": 0.68
+    "蔡明紹": 0.70, "班德禮": 0.70, "梁家俊": 0.68, "周俊樂": 0.65,
+    "袁幸堯": 0.60, "黃寶妮": 0.55
 }
 
 ELITE_TRAINERS = {
     "蔡約翰": 0.92, "方嘉柏": 0.88, "沈集成": 0.88, "呂健威": 0.86,
     "告東尼": 0.84, "廖康銘": 0.84, "伍鵬志": 0.85, "姚本輝": 0.80,
-    "文家良": 0.78, "賀賢": 0.76, "羅富全": 0.78
+    "文家良": 0.78, "賀賢": 0.76, "羅富全": 0.78, "蘇偉賢": 0.75,
+    "甘敏斯": 0.65, "黎昭昇": 0.70
 }
 
 def parse_gear_features(gear_str):
@@ -92,12 +94,12 @@ def detect_upcoming_meeting():
 
 def fetch_live_odds(date_str, venue, race_no):
     """
-    🌟 專門直連馬會官方 eWin (https://bet.hkjc.com/ch/racing/wp/{date}/{venue}/{race_no})
-    提取各馬匹「獨贏 (Win)」即時真實賠率
+    🌟 專門直連馬會官方 eWin 提取各馬匹「獨贏 (Win)」即時真實賠率
+    支援字串流解析 (1=6.4,2.3;2=6.7,2.7) 與 HTML 表格解析
     """
     odds_map = {}
 
-    # 通道 1：馬會官方 eWin 核心即時資料流 (返回格式: 1=6.4,2.3;2=6.7,2.7;...)
+    # 通道 1：馬會官方 eWin 核心即時資料流 (逗號前提取獨贏賠率)
     data_stream_urls = [
         f"https://bet.hkjc.com/racing/getJSON.aspx?type=winplaodds&date={date_str}&venue={venue}&start={race_no}&end={race_no}",
         f"https://bet.hkjc.com/racing/getJSON.aspx?type=winplaodds&date={date_str}&venue={venue}&raceno={race_no}",
@@ -312,7 +314,7 @@ def run_upcoming():
             "race_class": meta["race_class"]
         }).execute()
 
-        # 3. 核心實力評分
+        # 3. 讓磅平衡核心評分 (徹底修正 1號馬偏誤)
         ratings = [float(h["rating"]) for h in horses]
         avg_r = sum(ratings) / len(ratings) if ratings else 40.0
         weights = [float(h["weight"]) for h in horses]
@@ -320,25 +322,32 @@ def run_upcoming():
 
         scores = []
         for h in horses:
-            r_score = (float(h["rating"]) - avg_r) / 10.0
-            w_score = (avg_w - float(h["weight"])) / 10.0
+            # 讓磅公平性：1分評分 = 1磅負磅，互為抵消！消除高評分虛胖優勢
+            h_cap_edge = ((float(h["rating"]) - avg_r) - (float(h["weight"]) - avg_w)) / 10.0
+
+            # 負磅體力懲罰與紅利 (頂磅 >=133 扣分，輕磅 <=122 加分)
+            h_wt = float(h["weight"])
+            if h_wt >= 134: wt_penalty = -0.25 # 頂磅135消耗極大
+            elif h_wt >= 130: wt_penalty = -0.10
+            elif h_wt <= 122: wt_penalty = +0.20 # 輕磅衝刺爆發
+            else: wt_penalty = 0.0
 
             draw = h["draw"]
-            if draw <= 3: d_score = 0.50
-            elif draw <= 7: d_score = 0.20
+            if draw <= 3: d_score = 0.35
+            elif draw <= 7: d_score = 0.15
             elif draw <= 10: d_score = -0.10
-            else: d_score = -0.40
+            else: d_score = -0.35
 
             j_score = ELITE_JOCKEYS.get(h["jockey"], 0.40)
             t_score = ELITE_TRAINERS.get(h["trainer"], 0.45)
-            jt_score = (j_score * 0.70 + t_score * 0.30)
+            jt_score = (j_score * 0.70 + t_score * 0.30) - 0.50
 
             g_score = h["gear_info"]["bonus"]
 
-            total = (r_score * 0.35) + (w_score * 0.15) + (d_score * 0.15) + (jt_score * 0.30) + (g_score * 0.05)
+            total = (h_cap_edge * 0.10) + wt_penalty + d_score + (jt_score * 0.40) + (g_score * 0.05)
             scores.append(total)
 
-        # 4. 貝氏實戰融合勝率
+        # 4. 貝氏實戰融合勝率 (賠率加權，誰是大熱門一目了然)
         scores = np.array(scores)
         exp_s = np.exp(scores * 2.0)
         raw_probs = (exp_s / exp_s.sum()) * 100.0
