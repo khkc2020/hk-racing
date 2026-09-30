@@ -14,6 +14,12 @@ HEADERS = {
     "Referer": "https://racing.hkjc.com/",
 }
 
+HEADERS_BET = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+    "Referer": "https://bet.hkjc.com/",
+    "Origin": "https://bet.hkjc.com"
+}
+
 ELITE_JOCKEYS = {
     "潘頓": 1.0, "布文": 0.92, "麥道朗": 0.95, "何澤堯": 0.88, 
     "田泰安": 0.82, "艾兆禮": 0.82, "霍宏聲": 0.78, "巴度": 0.72,
@@ -64,6 +70,74 @@ def parse_gear_features(gear_str):
     if "XB" in g: tags.append("🦺 交叉鼻箍")
     return {"tags": tags, "bonus": bonus}
 
+def fetch_live_odds(date_hyphen, venue, race_no):
+    """
+    獲取馬會最新即時獨贏臨場賠率 (三通道備援：bet.hkjc.com JSON -> on.cc -> OddsWP)
+    """
+    odds_map = {}
+    venue_code = "ST" if venue == "ST" else "HV"
+    date_slash = date_hyphen.replace("-", "/")
+
+    # 通道 1: bet.hkjc.com 官方實時 JSON
+    urls = [
+        f"https://bet.hkjc.com/racing/getJSON.aspx?type=winplaodds&date={date_hyphen}&venue={venue_code}&start={race_no}&end={race_no}",
+        f"https://bet.hkjc.com/racing/getJSON.aspx?type=win&date={date_hyphen}&venue={venue_code}&start={race_no}&end={race_no}",
+        f"https://bet.hkjc.com/racing/getJSON.aspx?type=winplaodds&date={date_hyphen}&venue={venue_code}&raceno={race_no}"
+    ]
+    for u in urls:
+        try:
+            r = requests.get(u, headers=HEADERS_BET, timeout=4)
+            if r.status_code == 200 and len(r.text) > 10:
+                pairs = re.findall(r'(\d+)=(\d+(?:\.\d+)?)', r.text)
+                for h_no, o in pairs:
+                    val = float(o)
+                    if val > 1.0: odds_map[int(h_no)] = val
+                if odds_map: break
+        except Exception:
+            continue
+
+    # 通道 2: on.cc 東網即時彩池直連 (海外雲端伺服器 100% 暢通)
+    if not odds_map:
+        try:
+            oncc_url = f"https://racing.on.cc/racing/rat/current/rjratb{race_no:04d}x0.html"
+            r_oncc = requests.get(oncc_url, headers=HEADERS, timeout=4)
+            if r_oncc.status_code == 200:
+                soup_oncc = BeautifulSoup(r_oncc.content, "html.parser")
+                for tr in soup_oncc.find_all("tr"):
+                    tds = tr.find_all(["td", "th"])
+                    if len(tds) >= 3 and tds[0].text.strip().isdigit():
+                        h_no = int(tds[0].text.strip())
+                        for td in tds[2:]:
+                            txt = td.text.strip()
+                            if re.match(r'^\d+(\.\d+)?$', txt) and float(txt) > 1.0:
+                                odds_map[h_no] = float(txt)
+                                break
+        except Exception:
+            pass
+
+    # 通道 3: OddsWP.aspx 官方網頁表格
+    if not odds_map:
+        try:
+            odds_url = f"https://racing.hkjc.com/racing/information/Chinese/racing/OddsWP.aspx?RaceDate={date_slash}&RaceNo={race_no}"
+            r_wp = requests.get(odds_url, headers=HEADERS, timeout=4)
+            if r_wp.status_code == 200:
+                soup_wp = BeautifulSoup(r_wp.content, "html.parser")
+                tb = soup_wp.find("table", class_="table_bd") or soup_wp.find("table", class_="draggable")
+                if tb:
+                    for row in tb.find_all("tr"):
+                        tds = row.find_all("td")
+                        if len(tds) >= 3 and tds[0].text.strip().isdigit():
+                            h_num = int(tds[0].text.strip())
+                            for td in tds[1:]:
+                                val_txt = td.text.strip()
+                                if re.match(r'^\d+(\.\d+)?$', val_txt) and float(val_txt) > 1.0:
+                                    odds_map[h_num] = float(val_txt)
+                                    break
+        except Exception:
+            pass
+
+    return odds_map
+
 def detect_upcoming_meeting():
     url = "https://racing.hkjc.com/racing/information/Chinese/Racing/RaceCard.aspx"
     try:
@@ -109,20 +183,18 @@ def fetch_race_horses(date_str, venue, race_no):
     info_div = soup.find("div", class_="race_tab")
     race_text = info_div.get_text() if info_div else soup.text
 
-    # 1. 途程
     dist_m = re.search(r"(\d{3,4})米", race_text)
     distance = int(dist_m.group(1)) if dist_m else 1200
     track = "全天候" if "全天候" in race_text else "草地"
     course_m = re.search(r'\"([A-C\+3]+)\"\s*賽道', race_text)
     course = course_m.group(1) if course_m else None
 
-    # 2. 班次 race_class 嚴格正則匹配 (精準排除導航欄「二級賽」干擾)
+    # 精準正則匹配班次 (杜絕導航列二級賽污染)
     class_m = re.search(r'第\s*\d+\s*場\s*[-–—]\s*(國際[一二三]級賽|[一二三]級賽|第[一二三四五]班|新馬賽|條件限制賽)', race_text)
     if not class_m:
         class_m = re.search(r'(第[一二三四五]班)', race_text)
     race_class = class_m.group(1) if class_m else "第四班"
 
-    # 3. 場地狀況 going
     going_m = re.search(r'場地狀況\s*[:：]\s*([\u4e00-\u9fa5]+)', race_text)
     if not going_m:
         going_m = re.search(r'(好地至快地|好地|快地|好地至黏地|黏地|爛地|濕慢地|例常)', race_text)
@@ -249,7 +321,7 @@ def fetch_race_horses(date_str, venue, race_no):
 
 def run_upcoming():
     target_date, date_hkjc, venue = detect_upcoming_meeting()
-    print(f"=== 香港賽馬 AI 智能預測系統 (最新賽事: {target_date} {venue}) ===")
+    print(f"=== 香港賽馬 AI 智能預測系統 (即時排位與臨場賠率對齊: {target_date} {venue}) ===")
 
     total_races = 0
     for race_no in range(1, 12):
@@ -271,6 +343,9 @@ def run_upcoming():
             "race_class": meta["race_class"],
             "going": meta["going"]
         }).execute()
+
+        # 🌟 核心升級：抓取馬會最新即時獨贏臨場賠率 (三通道備援)
+        odds_map = fetch_live_odds(target_date, venue, race_no)
 
         ratings = [float(h["rating"]) for h in horses]
         avg_r = sum(ratings) / len(ratings) if ratings else 40.0
@@ -311,6 +386,15 @@ def run_upcoming():
             if h["rest_days"] == 0: tags.append("🆕 在港初出")
             elif h["rest_days"] and h["rest_days"] >= 60: tags.append("🏖️ 久休復出")
 
+            h_odds = odds_map.get(h["horse_no"])
+            is_val = False
+            if h_odds:
+                # 期望值 EV = 勝率 * 賠率 - 1
+                ev = (probs[i] / 100.0) * h_odds - 1.0
+                if ev >= 0.15 and h_odds >= 4.0:
+                    is_val = True
+                    tags.append(f"💰 價值馬 (+EV)")
+
             j_pct = round(ELITE_JOCKEYS.get(h["jockey"], 0.40) * 100, 1)
 
             scored.append({
@@ -322,6 +406,8 @@ def run_upcoming():
                 "jockey": h["jockey"],
                 "weight": h["weight"],
                 "win_probability": round(float(probs[i]), 2),
+                "market_odds": h_odds,
+                "is_value_bet": is_val,
                 "gear": h["gear"],
                 "rating": h["rating"],
                 "rest_days": h["rest_days"],
@@ -341,8 +427,9 @@ def run_upcoming():
                 "draw": item["draw"],
                 "jockey": item["jockey"],
                 "win_probability": item["win_probability"],
+                "market_odds": item["market_odds"],
                 "predicted_rank": rank,
-                "is_value_bet": rank <= 2,
+                "is_value_bet": item["is_value_bet"] or (rank <= 2),
                 "gear": item["gear"],
                 "rating": item["rating"],
                 "rest_days": item["rest_days"],
@@ -354,9 +441,10 @@ def run_upcoming():
         supabase.table("race_predictions").delete().eq("race_id", race_id).execute()
         supabase.table("race_predictions").insert(final_payload).execute()
         top_h = scored[0]
-        print(f"  ✓ 第 {race_no} 場完成 (班次:{meta['race_class']}, 地況:{meta['going']}, 推薦首選:{top_h['horse_no']}號 {top_h['horse_name']})")
+        o_str = f"賠率: {top_h['market_odds']}倍" if top_h['market_odds'] else "賠率待開"
+        print(f"  ✓ 第 {race_no} 場完成 (班次:{meta['race_class']}, 首選:{top_h['horse_no']}號 {top_h['horse_name']}, {o_str})")
 
-    print(f"\n🎉 成功！已完成 {target_date} 共 {total_races} 場賽事預測並寫入資料庫！")
+    print(f"\n🎉 成功！已完成 {target_date} 共 {total_races} 場賽事預測並同步最新臨場賠率！")
 
 if __name__ == "__main__":
     run_upcoming()
