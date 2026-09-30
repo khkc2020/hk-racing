@@ -92,81 +92,128 @@ def detect_upcoming_meeting():
 
 def fetch_live_odds(date_str, venue, race_no):
     """
-    精準從馬會官方投注頁面抓取各馬匹獨贏 (WIN) 即時賠率
+    從香港賽馬會官方 GraphQL API (info.cld.hkjc.com) 及投注介面
+    精準抓取該場次各馬匹獨贏 (WIN) 即時/早盤賠率
     返回格式: {馬號(int): 獨贏賠率(float)}
     """
-    urls = [
-        f"https://bet.hkjc.com/ch/racing/wp/{date_str}/{venue}/{race_no}",
-        f"https://bet.hkjc.com/en/racing/wp/{date_str}/{venue}/{race_no}",
-        f"https://bet.hkjc.com/racing/pages/odds_wp.aspx?lang=ch&date={date_str}&venue={venue}&raceno={race_no}"
-    ]
-    odds_headers = {
+    odds_map = {}
+    graphql_url = "https://info.cld.hkjc.com/graphql/base/"
+    headers_graphql = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
         "Referer": "https://bet.hkjc.com/",
-        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"
+        "Origin": "https://bet.hkjc.com",
+        "Content-Type": "application/json",
+        "Accept": "*/*"
     }
 
-    odds_map = {}
-    for url in urls:
+    # 輔助函式：遞歸解析 GraphQL 返回的 pmPools 結構 (鎖定 WIN 彩池)
+    def parse_graphql_response(res_json):
+        local_odds = {}
+        def search(obj, current_pool=None):
+            if isinstance(obj, dict):
+                p_type = obj.get("oddsType", current_pool)
+                if "combString" in obj and "oddsValue" in obj:
+                    if current_pool in (None, "WIN"):
+                        try:
+                            h = int(obj["combString"])
+                            v = float(obj["oddsValue"])
+                            if 1 <= h <= 24 and 1.0 <= v <= 999.0:
+                                local_odds[h] = v
+                        except (ValueError, TypeError):
+                            pass
+                for k, v in obj.items():
+                    search(v, p_type)
+            elif isinstance(obj, list):
+                for item in obj:
+                    search(item, current_pool)
+        search(res_json)
+        return local_odds
+
+    # 🌟 第一通道：直連馬會官方 GraphQL API (React 網頁底層調用的真正真源)
+    queries = [
+        """
+        query getRaceOdds($date: String, $venueCode: String, $raceNo: Int, $oddsTypes: [String]) {
+          raceMeetings(date: $date, venueCode: $venueCode) {
+            pmPools(raceNo: $raceNo, oddsTypes: $oddsTypes) {
+              oddsType
+              oddsNodes {
+                combString
+                oddsValue
+              }
+            }
+          }
+        }
+        """,
+        """
+        query getRaceOddsRaces($date: String, $venueCode: String, $raceNo: Int) {
+          raceMeetings(date: $date, venueCode: $venueCode) {
+            races(raceNo: $raceNo) {
+              pmPools {
+                oddsType
+                oddsNodes {
+                  combString
+                  oddsValue
+                }
+              }
+            }
+          }
+        }
+        """
+    ]
+
+    for q in queries:
         try:
-            r = requests.get(url, headers=odds_headers, timeout=10)
-            if r.status_code == 200 and r.text:
-                soup = BeautifulSoup(r.text, "html.parser")
-
-                # 策略 1: 解析 HTML 賠率表格 (直接抓取「馬號」與「獨贏」欄位)
-                for tb in soup.find_all("table"):
-                    rows = tb.find_all("tr")
-                    if not rows: continue
-                    headers = [th.text.strip().lower() for th in rows[0].find_all(["th", "td"])]
-
-                    h_idx, win_idx = -1, -1
-                    for i, h in enumerate(headers):
-                        if any(k in h for k in ["馬號", "馬匹編號"]) or h in ["no.", "no"]:
-                            if h_idx == -1: h_idx = i
-                        elif any(k in h for k in ["獨贏", "win"]):
-                            if "及" not in h and "&" not in h:  # 排除「獨贏及位置」
-                                if win_idx == -1: win_idx = i
-
-                    if h_idx != -1 and win_idx != -1:
-                        for row in rows[1:]:
-                            cols = [td.text.strip() for td in row.find_all(["td", "th"])]
-                            if len(cols) > max(h_idx, win_idx):
-                                raw_no = cols[h_idx]
-                                raw_odds = cols[win_idx]
-                                if raw_no.isdigit():
-                                    m_val = re.search(r"(\d+(?:\.\d+)?)", raw_odds)
-                                    if m_val:
-                                        val = float(m_val.group(1))
-                                        if 1.0 <= val <= 999.0:
-                                            odds_map[int(raw_no)] = val
-
-                # 策略 2: 若頁面由前端 script 注入，檢查嵌入的資料物件
-                if not odds_map:
-                    for sc in soup.find_all("script"):
-                        txt = sc.text
-                        if "win" in txt.lower():
-                            try:
-                                data = json.loads(txt)
-                                if isinstance(data, dict):
-                                    for v in data.values():
-                                        if isinstance(v, str) and "=" in v:
-                                            for h_no, o in re.findall(r"\b(\d{1,2})=(\d+(?:\.\d+)?)\b", v):
-                                                odds_map[int(h_no)] = float(o)
-                            except Exception:
-                                pass
-
-                # 策略 3: 正則直接匹配 1=3.3;2=14.0
-                if not odds_map:
-                    pairs = re.findall(r"\b(\d{1,2})=(\d+(?:\.\d+)?)\b", r.text)
-                    for h_no, o in pairs:
-                        h, val = int(h_no), float(o)
-                        if 1 <= h <= 20 and 1.0 <= val <= 999.0:
-                            odds_map[h] = val
-
-                if odds_map:
+            payload = {
+                "query": q,
+                "variables": {
+                    "date": date_str,
+                    "venueCode": venue,
+                    "raceNo": race_no,
+                    "oddsTypes": ["WIN"]
+                }
+            }
+            resp = requests.post(graphql_url, json=payload, headers=headers_graphql, timeout=8)
+            if resp.status_code == 200:
+                res_data = resp.json()
+                extracted = parse_graphql_response(res_data)
+                if extracted:
+                    odds_map.update(extracted)
                     break
         except Exception:
             continue
+
+    # 🌟 第二通道：備用傳統頁面 OddsWP 解析
+    if not odds_map:
+        date_slash = date_str.replace("-", "/")
+        fallback_urls = [
+            f"https://racing.hkjc.com/racing/information/Chinese/racing/OddsWP.aspx?RaceDate={date_slash}&RaceNo={race_no}",
+            f"https://bet.hkjc.com/racing/pages/odds_wp.aspx?lang=ch&date={date_str}&venue={venue}&raceno={race_no}"
+        ]
+        headers_web = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            "Referer": "https://racing.hkjc.com/"
+        }
+        for u in fallback_urls:
+            try:
+                r = requests.get(u, headers=headers_web, timeout=6)
+                if r.status_code == 200 and r.text:
+                    soup = BeautifulSoup(r.text, "html.parser")
+                    for tb in soup.find_all("table"):
+                        for row in tb.find_all("tr"):
+                            cols = [td.text.strip() for td in row.find_all(["td", "th"])]
+                            if len(cols) >= 3 and cols[0].isdigit():
+                                h = int(cols[0])
+                                for c in cols[1:]:
+                                    c_clean = c.replace("$", "").strip()
+                                    if re.match(r"^\d+(?:\.\d+)?$", c_clean):
+                                        val = float(c_clean)
+                                        if 1.0 <= val <= 999.0 and h not in odds_map:
+                                            odds_map[h] = val
+                                            break
+                    if odds_map:
+                        break
+            except Exception:
+                continue
 
     return odds_map
 
@@ -314,7 +361,7 @@ def run_upcoming():
         total_races += 1
         race_id = f"{target_date.replace('-', '')}_{venue}_{race_no:02d}"
 
-        # 1. 抓取該場次即時獨贏賠率 (直接爬取 bet.hkjc.com/ch/racing/wp/...)
+        # 1. 抓取該場次即時獨贏賠率 (直連馬會官方 GraphQL API)
         odds_map = fetch_live_odds(target_date, venue, race_no)
 
         # 2. 登記或更新賽事基本資料
@@ -360,7 +407,7 @@ def run_upcoming():
         for i, h in enumerate(horses):
             tags = list(h["gear_info"]["tags"])
             if h["draw"] <= 3: tags.append("🎯 黃金內檔")
-            elif h["draw"] >= 11: tags.append("⚠️️ 外檔考驗")
+            elif h["draw"] >= 11: tags.append("⚠ 外檔考驗")
             if h["jockey"] in ELITE_JOCKEYS: tags.append("🔥 頂級騎師")
             tags.append("⏳ 體力黃金期")
 
