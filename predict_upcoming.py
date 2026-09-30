@@ -7,9 +7,9 @@ import numpy as np
 from bs4 import BeautifulSoup
 from supabase import create_client
 
-# Supabase 連線設定（優先讀取環境變數，或填入金鑰）
-SUPABASE_URL = "https://rxmkohhgznfcnhdqegwq.supabase.co"
-SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InJ4bWtvaGhnem5mY25oZHFlZ3dxIiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc5MDQ5OTk2OCwiZXhwIjoyMTA2MDc1OTY4fQ.QUqbXyvQuVuulKbiaI0jC20aUw21l1vd4pjXWEryjuI"
+# Supabase 連線設定（兼容 GitHub Actions 環境變數與本地直接執行）
+SUPABASE_URL = os.environ.get("SUPABASE_URL", "https://rxmkohhgznfcnhdqegwq.supabase.co")
+SUPABASE_KEY = os.environ.get("SUPABASE_KEY", "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InJ4bWtvaGhnem5mY25oZHFlZ3dxIiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc5MDQ5OTk2OCwiZXhwIjoyMTA2MDc1OTY4fQ.QUqbXyvQuVuulKbiaI0jC20aUw21l1vd4pjXWEryjuI")
 
 supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
 
@@ -91,7 +91,6 @@ def detect_upcoming_meeting():
 
 def fetch_live_odds(date_str, venue, race_no):
     """
-    從香港賽馬會官方 GraphQL API 及投注介面
     精準抓取該場次各馬匹獨贏 (WIN) 即時/早盤賠率
     返回格式: {馬號(int): 獨贏賠率(float)}
     """
@@ -127,24 +126,12 @@ def fetch_live_odds(date_str, venue, race_no):
         search(res_json)
         return local_odds
 
+    # 1. 嘗試 GraphQL API
     queries = [
         """
         query getRaceOdds($date: String, $venueCode: String, $raceNo: Int, $oddsTypes: [String]) {
           raceMeetings(date: $date, venueCode: $venueCode) {
             pmPools(raceNo: $raceNo, oddsTypes: $oddsTypes) {
-              oddsType
-              oddsNodes {
-                combString
-                oddsValue
-              }
-            }
-          }
-        }
-        """,
-        """
-        query getRaceOddsRaces($date: String, $venueCode: String, $raceNo: Int) {
-          races(date: $date, venueCode: $venueCode, raceNo: $raceNo) {
-            pmPools {
               oddsType
               oddsNodes {
                 combString
@@ -175,6 +162,7 @@ def fetch_live_odds(date_str, venue, race_no):
         except Exception:
             pass
 
+    # 2. 備用 REST API
     try:
         y, m, d = date_str.split("-")
         rest_url = f"https://bet.hkjc.com/racing/getJSON.aspx?type=winplaodds&date={y}-{m}-{d}&venue={venue}&raceno={race_no}"
@@ -187,7 +175,7 @@ def fetch_live_odds(date_str, venue, race_no):
                     parts = token.split("=")
                     if len(parts) == 2 and parts[0].isdigit():
                         h_no = int(parts[0])
-                        sub_vals = parts[1].split(",")
+                        sub_vals = parts.split(",")
                         if sub_vals and sub_vals[0].replace(".", "").isdigit():
                             odds_map[h_no] = float(sub_vals[0])
             if odds_map:
@@ -334,10 +322,10 @@ def run_upcoming():
         total_races += 1
         race_id = f"{target_date.replace('-', '')}_{venue}_{race_no:02d}"
 
-        # 1. 抓取該場次即時獨贏賠率
+        # 1. 抓取即時賠率
         odds_map = fetch_live_odds(target_date, venue, race_no)
 
-        # 2. 登記或更新賽事基本資料
+        # 2. 登記賽事資料
         supabase.table("races").upsert({
             "race_id": race_id, "race_date": target_date,
             "venue": meta["venue"], "race_no": race_no, "distance": meta["distance"],
@@ -345,7 +333,7 @@ def run_upcoming():
             "race_class": meta["race_class"]
         }).execute()
 
-        # 3. 核心實力評估：評分基底 + 頂級騎練 + 檔位利弊 + 負磅優勢 + 配備微調
+        # 3. 核心實力評分
         ratings = [float(h["rating"]) for h in horses]
         avg_r = sum(ratings) / len(ratings) if ratings else 40.0
         weights = [float(h["weight"]) for h in horses]
@@ -371,12 +359,11 @@ def run_upcoming():
             total = (r_score * 0.35) + (w_score * 0.15) + (d_score * 0.15) + (jt_score * 0.30) + (g_score * 0.05)
             scores.append(total)
 
-        # 🌟 實戰融合勝率計算 (經 1,448 場歷史大數據回測驗證：首選勝率 30.5%，上名率 61.3%，前四連贏 40.6%)
+        # 4. 貝氏實戰融合勝率
         scores = np.array(scores)
         exp_s = np.exp(scores * 2.0)
         raw_probs = (exp_s / exp_s.sum()) * 100.0
 
-        # 檢查是否已取得即時/早盤賠率
         has_odds = any(h["horse_no"] in odds_map and odds_map[h["horse_no"]] > 1.0 for h in horses)
         if has_odds:
             market_implied = []
@@ -385,7 +372,6 @@ def run_upcoming():
                 market_implied.append(1.0 / o if o > 1.0 else 0.05)
             sum_mkt = sum(market_implied)
             mkt_probs = np.array([(m / sum_mkt) * 100.0 for m in market_implied])
-            # 融合勝率: 55% 市場真金白銀實力 + 45% AI 讓磅與騎練微調
             final_probs = 0.55 * mkt_probs + 0.45 * raw_probs
         else:
             mkt_probs = np.zeros(len(horses))
@@ -401,9 +387,10 @@ def run_upcoming():
             if h["draw"] <= 3: tags.append("🎯 黃金內檔")
             elif h["draw"] >= 11: tags.append("⚠️ 外檔考驗")
             if h["jockey"] in ELITE_JOCKEYS: tags.append("🔥 頂級騎師")
+            if h.get("trainer"): tags.append(f"🎪 {h['trainer']}")
+            if h.get("weight"): tags.append(f"⚖️️ {int(h['weight'])}磅")
             tags.append("⏳ 體力黃金期")
 
-            # 標記高期望值超值馬 (回測 ROI 達 99.2% 的冷門伏兵)
             is_val = False
             if has_odds and odds and 3.5 <= odds <= 15.0 and edge >= 3.0:
                 tags.append("💎 賠率超值 (超額價值)")
@@ -411,13 +398,16 @@ def run_upcoming():
 
             j_pct = round(ELITE_JOCKEYS.get(h["jockey"], 0.40) * 100, 1)
 
+            # 🌟 核心關鍵：合併騎練格式「騎師 / 練馬師」，保證前台直接顯示！
+            jockey_trainer_str = f"{h['jockey']} / {h['trainer']}" if h.get("trainer") else h["jockey"]
+
             scored.append({
                 "race_id": race_id,
                 "horse_no": h_no,
                 "horse_code": h["horse_code"],
                 "horse_name": h["horse_name"],
                 "draw": h["draw"],
-                "jockey": h["jockey"],
+                "jockey": jockey_trainer_str,
                 "win_probability": round(float(final_probs[i]), 2),
                 "gear": h["gear"],
                 "rating": h["rating"],
@@ -427,7 +417,7 @@ def run_upcoming():
                 "is_value_bet": is_val
             })
 
-        # 按融合勝率由高到低排序
+        # 按融合勝率排序
         scored.sort(key=lambda x: x["win_probability"], reverse=True)
         final_payload = []
         for rank, item in enumerate(scored, 1):
@@ -465,7 +455,7 @@ def run_upcoming():
         supabase.table("race_predictions").insert(final_payload).execute()
         top_h = scored[0]
         odds_count = sum(1 for p in final_payload if p.get("market_odds") is not None)
-        print(f"  ✓ 第 {race_no} 場完成 (出賽: {len(horses)} 匹, 賠率匹配: {odds_count} 匹, 首選: {top_h['horse_name']} {top_h['horse_no']}號 預測勝率:{top_h['win_probability']}%)")
+        print(f"  ✓ 第 {race_no} 場完成 (出賽: {len(horses)} 匹, 賠率匹配: {odds_count} 匹, 首選: {top_h['horse_name']} {top_h['horse_no']}號 [{top_h['jockey']}] 預測勝率:{top_h['win_probability']}%)")
 
     print(f"\n🎉 成功！已完成 {target_date} 共 {total_races} 場賽事預測與賠率更新並寫入 Supabase！")
 
