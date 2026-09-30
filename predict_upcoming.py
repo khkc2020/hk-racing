@@ -6,7 +6,7 @@ import numpy as np
 from bs4 import BeautifulSoup
 from supabase import create_client
 
-# 🌟 直接填入您的 Supabase 專案連線資訊
+# Supabase 連線設定（支援環境變數或直接在此填入金鑰）
 SUPABASE_URL = "https://rxmkohhgznfcnhdqegwq.supabase.co"
 SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InJ4bWtvaGhnem5mY25oZHFlZ3dxIiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc5MDQ5OTk2OCwiZXhwIjoyMTA2MDc1OTY4fQ.QUqbXyvQuVuulKbiaI0jC20aUw21l1vd4pjXWEryjuI"
 
@@ -88,16 +88,73 @@ def detect_upcoming_meeting():
 
     return "2026-10-01", "2026/10/01", "ST"
 
-def fetch_live_odds(date_str, venue, race_no):
+def fetch_all_odds_with_playwright(date_str, venue, total_races=11):
     """
-    雙引擎賠率抓取模組：
-    引擎 1：東網 (on.cc) 賽馬賠率速遞（香港賽馬會官方數據直連鏡像，純 HTML 表格，免 JS，100% 穩定秒速解析）
-    引擎 2：馬會官方 GraphQL API（備援接口）
-    返回格式: {馬號(int): 獨贏賠率(float)}
+    🌟 人眼級官網真實抓取模組 (Playwright Headless Chrome)：
+    在後台啟動真實的 Chrome 瀏覽器渲染馬會官網 (bet.hkjc.com)，
+    等待 JavaScript 執行完畢並動態畫出表格後，直接提取畫面上的即時獨贏賠率！
+    返回: {場次(int): {馬號(int): 獨贏賠率(float)}}
     """
-    odds_map = {}
+    try:
+        from playwright.sync_api import sync_playwright
+    except ImportError:
+        print("  💡 提示：若要啟用「馬會官網人眼級直接抓取」，請在 PowerShell 執行：")
+        print("     pip install playwright")
+        print("     playwright install chromium")
+        return None
 
-    # 🌟 引擎 1：東網即時獨贏賠率頁面 (rjrata0001x0.html, rjrata0002x0.html...)
+    print("  🚀 正在啟動後台真實 Chrome 引擎，直接連線馬會官網 (bet.hkjc.com) 讀取最新即時賠率...")
+    all_odds = {}
+    try:
+        with sync_playwright() as p:
+            browser = p.chromium.launch(headless=True)
+            context = browser.new_context(
+                user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+                viewport={"width": 1280, "height": 900}
+            )
+            page = context.new_page()
+
+            for r_no in range(1, total_races + 1):
+                url = f"https://bet.hkjc.com/ch/racing/wp/{date_str}/{venue}/{r_no}"
+                try:
+                    page.goto(url, wait_until="domcontentloaded", timeout=15000)
+                    page.wait_for_timeout(2500)  # 等候 React 完成畫面渲染
+
+                    extracted = page.evaluate("""() => {
+                        const res = {};
+                        const rows = document.querySelectorAll('tr');
+                        for (const tr of rows) {
+                            const cells = Array.from(tr.querySelectorAll('td, th')).map(c => c.innerText.trim());
+                            if (cells.length >= 2 && /^\\d+$/.test(cells[0])) {
+                                const hNo = parseInt(cells[0]);
+                                for (let i = 1; i < cells.length; i++) {
+                                    const clean = cells[i].replace('$', '').trim();
+                                    if (/^\\d+(\\.\\d+)?$/.test(clean)) {
+                                        const val = parseFloat(clean);
+                                        if (val >= 1.0 && val <= 999.0) {
+                                            res[hNo] = val;
+                                            break;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        return res;
+                    }""")
+                    all_odds[r_no] = extracted or {}
+                except Exception:
+                    all_odds[r_no] = {}
+
+            browser.close()
+        print(f"  ✓ 馬會官網即時賠率渲染讀取完成！共取得 {len(all_odds)} 場數據。")
+        return all_odds
+    except Exception as e:
+        print(f"  ⚠️ Playwright 渲染過程提示: {e}")
+        return None
+
+def fetch_live_odds(date_str, venue, race_no):
+    """備用賠率抓取模組（東網與 GraphQL 備援）"""
+    odds_map = {}
     try:
         oncc_url = f"https://racing.on.cc/racing/rat/current/rjrata00{race_no:02d}x0.html"
         headers_oncc = {
@@ -124,76 +181,8 @@ def fetch_live_odds(date_str, venue, race_no):
                                         break
                     if odds_map:
                         break
-    except Exception as e:
+    except Exception:
         pass
-
-    # 🌟 引擎 2：若引擎 1 未命中，調用香港賽馬會官方 GraphQL API 作為備援
-    if not odds_map:
-        graphql_url = "https://info.cld.hkjc.com/graphql/base/"
-        headers_graphql = {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-            "Referer": "https://bet.hkjc.com/",
-            "Origin": "https://bet.hkjc.com",
-            "Content-Type": "application/json"
-        }
-        def parse_graphql_response(res_json):
-            local_odds = {}
-            def search(obj, current_pool=None):
-                if isinstance(obj, dict):
-                    p_type = obj.get("oddsType", current_pool)
-                    if "combString" in obj and "oddsValue" in obj:
-                        if current_pool in (None, "WIN"):
-                            try:
-                                h = int(obj["combString"])
-                                v = float(obj["oddsValue"])
-                                if 1 <= h <= 24 and 1.0 <= v <= 999.0:
-                                    local_odds[h] = v
-                            except (ValueError, TypeError):
-                                pass
-                    for k, v in obj.items():
-                        search(v, p_type)
-                elif isinstance(obj, list):
-                    for item in obj:
-                        search(item, current_pool)
-            search(res_json)
-            return local_odds
-
-        queries = [
-            """
-            query getRaceOdds($date: String, $venueCode: String, $raceNo: Int, $oddsTypes: [String]) {
-              raceMeetings(date: $date, venueCode: $venueCode) {
-                pmPools(raceNo: $raceNo, oddsTypes: $oddsTypes) {
-                  oddsType
-                  oddsNodes {
-                    combString
-                    oddsValue
-                  }
-                }
-              }
-            }
-            """
-        ]
-        for q in queries:
-            try:
-                payload = {
-                    "query": q,
-                    "variables": {
-                        "date": date_str,
-                        "venueCode": venue,
-                        "raceNo": race_no,
-                        "oddsTypes": ["WIN"]
-                    }
-                }
-                resp = requests.post(graphql_url, json=payload, headers=headers_graphql, timeout=8)
-                if resp.status_code == 200:
-                    res_data = resp.json()
-                    extracted = parse_graphql_response(res_data)
-                    if extracted:
-                        odds_map.update(extracted)
-                        break
-            except Exception:
-                continue
-
     return odds_map
 
 def fetch_race_horses(date_str, venue, race_no):
@@ -329,6 +318,9 @@ def run_upcoming():
     target_date, date_hkjc, venue = detect_upcoming_meeting()
     print(f"=== 香港賽馬 AI 智能預測系統 (即將開跑賽事: {target_date} {venue}) ===")
 
+    # 1. 優先啟動 Playwright 真實 Chrome 瀏覽器渲染馬會官網即時賠率
+    playwright_odds = fetch_all_odds_with_playwright(target_date, venue, total_races=11)
+
     total_races = 0
     for race_no in range(1, 12):
         meta, horses = fetch_race_horses(date_hkjc, venue, race_no)
@@ -340,10 +332,14 @@ def run_upcoming():
         total_races += 1
         race_id = f"{target_date.replace('-', '')}_{venue}_{race_no:02d}"
 
-        # 1. 抓取該場次即時獨贏賠率 (雙引擎抓取)
-        odds_map = fetch_live_odds(target_date, venue, race_no)
+        # 2. 獲取賠率：優先使用馬會官網 Playwright 數據
+        odds_map = {}
+        if playwright_odds and race_no in playwright_odds and playwright_odds[race_no]:
+            odds_map = playwright_odds[race_no]
+        else:
+            odds_map = fetch_live_odds(target_date, venue, race_no)
 
-        # 2. 登記或更新賽事基本資料
+        # 3. 登記或更新賽事基本資料
         supabase.table("races").upsert({
             "race_id": race_id, "race_date": target_date,
             "venue": meta["venue"], "race_no": race_no, "distance": meta["distance"],
@@ -351,7 +347,7 @@ def run_upcoming():
             "race_class": meta["race_class"]
         }).execute()
 
-        # 3. 核心實力評估：評分基底 + 頂級騎練 + 檔位利弊 + 負磅優勢 + 配備微調
+        # 4. 核心實力評估：評分基底 + 頂級騎練 + 檔位利弊 + 負磅優勢 + 配備微調
         ratings = [float(h["rating"]) for h in horses]
         avg_r = sum(ratings) / len(ratings) if ratings else 40.0
         weights = [float(h["weight"]) for h in horses]
@@ -411,7 +407,7 @@ def run_upcoming():
         for rank, item in enumerate(scored, 1):
             strat = "🎯 獨贏首選 / 連贏馬膽" if rank == 1 else ("⚡ 次選主力" if rank == 2 else ("🛡️ 連贏配腳" if rank <= 4 else ""))
             h_no = item["horse_no"]
-            odds = odds_map.get(h_no)  # 取得該馬號對應的即時獨贏賠率
+            odds = odds_map.get(h_no)
 
             final_payload.append({
                 "race_id": item["race_id"],
@@ -428,7 +424,7 @@ def run_upcoming():
                 "smart_tags": item["smart_tags"],
                 "combo_synergy": item["combo_synergy"],
                 "bet_strategy": strat,
-                "market_odds": odds       # 寫入 Supabase numeric 欄位
+                "market_odds": odds
             })
 
         supabase.table("race_predictions").delete().eq("race_id", race_id).execute()
