@@ -4,7 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>香港賽馬 AI 智能預測看盤系統</title>
-  <!-- Tailwind CSS & Vue 3 & Supabase JS (免編譯直接運行) -->
+  <!-- Tailwind CSS & Vue 3 & Supabase JS -->
   <script src="https://cdn.tailwindcss.com"></script>
   <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
   <script src="https://unpkg.com/vue@3/dist/vue.global.prod.js"></script>
@@ -53,7 +53,7 @@
       <button @click="noticeMsg = ''" class="text-amber-600 hover:text-amber-800 font-bold ml-2 text-sm">✕</button>
     </div>
 
-    <!-- 賽日切換藥丸列 (水平滑動) -->
+    <!-- 賽日切換藥丸列 -->
     <div v-if="dates.length > 0" class="mt-3.5 flex items-center gap-2 overflow-x-auto pb-1.5">
       <span class="text-xs font-bold text-slate-400 whitespace-nowrap pl-0.5">賽日：</span>
       <button 
@@ -67,7 +67,7 @@
       </button>
     </div>
 
-    <!-- 場次切換列 (第1場 ~ 第11場) -->
+    <!-- 場次切換列 -->
     <div class="my-2.5 flex items-center gap-1.5 overflow-x-auto pb-1.5">
       <button 
         v-for="r in currentDayRaces" 
@@ -77,10 +77,6 @@
         class="px-3 py-1.5 rounded-xl text-xs sm:text-sm font-bold whitespace-nowrap transition active:scale-95"
       >
         第 {{ r.race_no }} 場
-      </button>
-
-      <button v-if="currentDayRaces.length === 0" @click="loadDemoData" class="bg-amber-100 hover:bg-amber-200 text-amber-800 border border-amber-300 px-3 py-1.5 rounded-xl text-xs font-bold transition">
-        🎲 點此載入示範預測預覽
       </button>
     </div>
 
@@ -101,7 +97,7 @@
       </div>
     </div>
 
-    <!-- 🏆 本場 AI 專家投注推介看板 (全新置頂) -->
+    <!-- 🏆 本場 AI 專家投注推介看板 -->
     <div v-if="predictions.length >= 2" class="bg-gradient-to-br from-amber-500 via-amber-600 to-amber-700 rounded-2xl p-4 text-white shadow-lg mb-3.5">
       <div class="flex items-center justify-between pb-2.5 border-b border-white/20">
         <div class="flex items-center gap-2">
@@ -121,7 +117,8 @@
             {{ predictions[0].horse_no }}號 {{ predictions[0].horse_name }}
           </div>
           <div class="text-white/80 text-[11px] mt-0.5">
-            {{ predictions[0].jockey }} • 實力馬膽 (預測勝率 {{ predictions[0].win_probability }}%)
+            {{ predictions[0].jockey }} • 實力馬膽 (預測勝率 {{ predictions[0].win_probability }}%
+            <span v-if="predictions[0].market_odds">, 賠率 {{ predictions[0].market_odds }}倍</span>)
           </div>
         </div>
 
@@ -159,7 +156,7 @@
       </div>
     </div>
 
-    <!-- 馬匹預測排行榜 (手機卡片化極致佈局) -->
+    <!-- 馬匹預測排行榜 -->
     <div v-if="predictions.length > 0" class="space-y-2.5">
       <div 
         v-for="h in predictions" 
@@ -194,12 +191,19 @@
                   {{ h.draw }}檔
                 </span>
               </div>
+              
+              <!-- 🌟 關鍵資訊列：騎練合體、評分、負磅、即時賠率、配備 -->
               <div class="text-xs text-slate-500 mt-1 flex flex-wrap items-center gap-1.5">
-                <span>🏇 {{ h.jockey }}</span>
+                <span class="font-medium text-slate-800">🏇 {{ h.jockey }}</span>
                 <span>•</span>
                 <span>評分: <strong class="text-slate-700">{{ h.rating || '-' }}</strong></span>
                 <span v-if="h.weight">•</span>
                 <span v-if="h.weight">負磅: <strong class="text-slate-700">{{ h.weight }}磅</strong></span>
+                <!-- 🌟 賠率標籤 -->
+                <span v-if="h.market_odds">•</span>
+                <span v-if="h.market_odds" class="text-amber-800 font-black bg-amber-100 px-1.5 py-0.5 rounded border border-amber-300">
+                  獨贏: {{ h.market_odds }}倍
+                </span>
                 <span>•</span>
                 <span>配備: {{ h.gear || '-' }}</span>
               </div>
@@ -223,25 +227,22 @@
 
         <!-- 底行：智慧標籤與策略徽章 -->
         <div class="mt-2.5 flex flex-wrap items-center gap-1.5 pt-2 border-t border-slate-100">
-          <!-- 下注策略 -->
           <span v-if="h.bet_strategy" class="bg-amber-100 text-amber-900 text-xs px-2 py-0.5 rounded-md font-bold">
             {{ h.bet_strategy }}
           </span>
 
-          <!-- 騎練勝率 -->
           <span v-if="h.combo_synergy" class="bg-blue-50 text-blue-700 text-xs px-2 py-0.5 rounded-md font-semibold">
             🤝 騎練指數 {{ h.combo_synergy }}%
           </span>
 
-          <!-- 官方配備與特徵標籤 -->
           <span 
             v-for="(tag, idx) in h.smart_tags" 
             :key="idx"
             :class="{
               'bg-red-50 text-red-700 font-bold border border-red-200': tag.includes('B1') || tag.includes('變革') || tag.includes('頂磅'),
               'bg-purple-50 text-purple-700 font-medium': tag.includes('舌帶') || tag.includes('鼻箍') || tag.includes('近況'),
-              'bg-emerald-50 text-emerald-700 font-medium': tag.includes('內檔') || tag.includes('輕磅'),
-              'bg-slate-100 text-slate-600': !tag.includes('B1') && !tag.includes('舌帶') && !tag.includes('內檔') && !tag.includes('輕磅')
+              'bg-emerald-50 text-emerald-700 font-medium': tag.includes('內檔') || tag.includes('輕磅') || tag.includes('價值馬'),
+              'bg-slate-100 text-slate-600': !tag.includes('B1') && !tag.includes('舌帶') && !tag.includes('內檔') && !tag.includes('輕磅') && !tag.includes('價值馬')
             }"
             class="text-xs px-2 py-0.5 rounded-md"
           >
@@ -249,18 +250,6 @@
           </span>
         </div>
       </div>
-    </div>
-
-    <!-- 無預測數據提示 -->
-    <div v-else-if="!loading" class="bg-white rounded-2xl border border-slate-200 p-8 text-center shadow-sm">
-      <span class="text-4xl block mb-2">⏳</span>
-      <h3 class="text-base font-bold text-slate-800">該場次暫無 AI 預測數據</h3>
-      <p class="text-xs text-slate-400 mt-1 max-w-sm mx-auto">
-        賽事排位公佈後，GitHub Actions 自動運算完成，預測結果便會即時顯示在此。
-      </p>
-      <button @click="loadDemoData" class="mt-4 bg-slate-900 hover:bg-slate-800 text-white text-xs font-bold px-4 py-2 rounded-xl shadow-sm transition active:scale-95">
-        🎲 點此載入示範數據預覽效果
-      </button>
     </div>
 
     <!-- 資料庫設定視窗 Modal -->
@@ -341,7 +330,7 @@
 
         const loadRaces = async () => {
           if (!initSupabase()) {
-            noticeMsg.value = '💡 提示：請點擊右上角「⚙️ 資料庫設定」輸入 Supabase Anon Key 即可啟用實時看盤！';
+            noticeMsg.value = '💡 提示：請點擊右上角「⚙️️ 資料庫設定」輸入 Supabase Anon Key 即可啟用實時看盤！';
             return;
           }
           loading.value = true;
@@ -393,50 +382,16 @@
           }
         };
 
-        const loadDemoData = () => {
-          races.value = [
-            { race_id: 'demo_01', race_date: '2026-10-01', race_no: 1, venue: 'ST', race_class: '第四班', distance: 1200, track_type: '草地', course: 'A' },
-            { race_id: 'demo_02', race_date: '2026-10-01', race_no: 2, venue: 'ST', race_class: '第三班', distance: 1600, track_type: '草地', course: 'A' }
-          ];
-          selectedDate.value = '2026-10-01';
-          selectedRaceId.value = 'demo_01';
-          predictions.value = [
-            {
-              horse_no: 6, horse_name: '當弗主力', horse_code: 'J037', draw: 2, jockey: '潘頓', rating: 33, weight: 126, gear: 'PC1',
-              win_probability: 24.8, predicted_rank: 1, bet_strategy: '🎯 獨贏首選 / 連贏馬膽', combo_synergy: 40.0,
-              smart_tags: ['🎯 黃金內檔', '👓 首次眼罩 (變革)', '🔥 近況大勇', '⭐ 頂級騎師']
-            },
-            {
-              horse_no: 12, horse_name: '輕磅伏兵', horse_code: 'K209', draw: 1, jockey: '何澤堯', rating: 28, weight: 116, gear: 'TT',
-              win_probability: 19.5, predicted_rank: 2, bet_strategy: '⚡ 次選主力', combo_synergy: 35.2,
-              smart_tags: ['🎯 黃金內檔', '🪶 輕磅突擊', '👅 繫舌帶', '⭐ 頂級騎師']
-            },
-            {
-              horse_no: 3, horse_name: '日日獎', horse_code: 'H283', draw: 4, jockey: '霍宏聲', rating: 39, weight: 132, gear: 'B2T',
-              win_probability: 16.2, predicted_rank: 3, bet_strategy: '🛡️ 連贏配腳', combo_synergy: 31.0,
-              smart_tags: ['🔥 近況大勇']
-            },
-            {
-              horse_no: 1, horse_name: '機械騎士', horse_code: 'H464', draw: 3, jockey: '黃寶妮', rating: 39, weight: 128, gear: 'BT',
-              win_probability: 12.0, predicted_rank: 4, bet_strategy: '🛡️ 連贏配腳', combo_synergy: 28.0,
-              smart_tags: ['🎯 黃金內檔']
-            }
-          ];
-          noticeMsg.value = '✨ 目前展示的是示範預測。在右上角輸入 Supabase Key 後即可載入真實排位！';
-        };
-
         onMounted(() => {
           if (initSupabase()) {
             loadRaces();
-          } else {
-            loadDemoData();
           }
         });
 
         return {
           supabaseUrl, supabaseKey, showSettings, loading, noticeMsg,
           dates, selectedDate, currentDayRaces, currentRace, selectedRaceId,
-          predictions, saveSettings, loadRaces, selectDate, selectRace, loadDemoData
+          predictions, saveSettings, loadRaces, selectDate, selectRace
         };
       }
     }).mount('#app');
