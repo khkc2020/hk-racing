@@ -13,6 +13,18 @@ SUPABASE_KEY = os.environ.get("SUPABASE_KEY", "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXV
 
 supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
 
+# 🌟 Supabase 防斷線自動重試包裝器
+def safe_db_op(op_func, max_retries=4):
+    for attempt in range(1, max_retries + 1):
+        try:
+            return op_func()
+        except Exception as e:
+            if attempt < max_retries:
+                time.sleep(1.5 * attempt)
+            else:
+                print(f"Supabase 寫入異常重試失敗: {e}")
+                raise e
+
 HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
     "Referer": "https://bet.hkjc.com/ch/racing/wp/",
@@ -452,8 +464,13 @@ def run_upcoming():
                 "market_odds": item["market_odds"]
             })
 
-        supabase.table("race_predictions").delete().eq("race_id", race_id).execute()
-        supabase.table("race_predictions").insert(final_payload).execute()
+                # 寫入預測結果 (防 HTTP/2 RemoteProtocolError 斷線自動重建連線)
+        def _write_preds():
+            c = create_client(SUPABASE_URL, SUPABASE_KEY)
+            c.table("race_predictions").delete().eq("race_id", race_id).execute()
+            c.table("race_predictions").insert(final_payload).execute()
+        safe_db_op(_write_preds)
+
         top_h = scored[0]
         odds_count = sum(1 for p in final_payload if p.get("market_odds") is not None)
         print(f"  ✓ 第 {race_no} 場完成 (出賽: {len(horses)} 匹, 賠率匹配: {odds_count} 匹, 首選: {top_h['horse_name']} {top_h['horse_no']}號 [{top_h['jockey']}] 預測勝率:{top_h['win_probability']}%, 賠率:{top_h['market_odds']})")
