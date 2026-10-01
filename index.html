@@ -100,7 +100,7 @@
       <button 
         v-for="r in currentDayRaces" 
         :key="r.race_id"
-        @click="selectRace(r.race_id)"
+        @click="selectRace(r)"
         :class="selectedRaceId === r.race_id ? 'bg-amber-500 text-white font-black shadow-md scale-105' : 'bg-white text-slate-700 hover:bg-slate-50 border border-slate-200'"
         class="px-3.5 py-1.5 rounded-xl text-xs flex-shrink-0 transition duration-150 active:scale-95"
       >
@@ -125,62 +125,120 @@
       </div>
     </div>
 
-    <!-- 🏆 本場 AI 專家投注推介看板 -->
-    <div v-if="predictions.length >= 2" class="bg-gradient-to-br from-amber-500 via-amber-600 to-amber-700 rounded-2xl p-4 text-white shadow-lg mb-3.5">
-      <div class="flex items-center justify-between pb-2.5 border-b border-white/20">
+    <!-- 🏆 本場 AI 專家投注推介看板 & 最值搏三匹馬 (量化 EV 與注碼模型) -->
+    <div v-if="predictions.length >= 2 && bestValuePicks" class="bg-gradient-to-br from-slate-900 via-indigo-950 to-slate-900 rounded-2xl p-4 text-white shadow-xl mb-4 border border-indigo-900/60">
+      <div class="flex items-center justify-between pb-3 border-b border-white/10">
         <div class="flex items-center gap-2">
-          <span class="text-xl">🏆</span>
-          <span class="font-black text-sm tracking-wide">本場 AI 專家投注推介組合</span>
+          <span class="text-2xl">🏆</span>
+          <div>
+            <h2 class="font-black text-sm sm:text-base tracking-wide text-white">本場 AI 量化最值搏三匹馬</h2>
+            <p class="text-[11px] text-indigo-300">結合真實預測勝率、期望值 (EV) 與 1/4 Kelly 資金模型</p>
+          </div>
         </div>
-        <span class="text-[11px] bg-white/20 px-2 py-0.5 rounded-full font-bold backdrop-blur-sm">精選心水</span>
+        <span class="text-[11px] bg-indigo-500/30 text-indigo-200 border border-indigo-400/30 px-2.5 py-0.5 rounded-full font-bold">
+          實戰核心
+        </span>
       </div>
 
-      <div class="grid grid-cols-1 sm:grid-cols-3 gap-2.5 mt-3 text-xs">
-        <div class="bg-black/15 rounded-xl p-3 backdrop-blur-sm border border-white/10">
-          <div class="text-amber-100 font-bold mb-1 flex items-center gap-1">
-            <span>🎯</span> 獨贏 (WIN) / 位置 (PLA)
+      <!-- 三大核心值搏馬卡片 -->
+      <div class="grid grid-cols-1 md:grid-cols-3 gap-3 mt-3.5">
+        <!-- 1. 最佳中冷門正期望值單打 -->
+        <div v-if="bestValuePicks.midValue" class="bg-gradient-to-b from-purple-950/60 to-purple-900/30 rounded-xl p-3.5 border border-purple-500/30 backdrop-blur-sm flex flex-col justify-between shadow-sm">
+          <div>
+            <div class="flex items-center justify-between mb-1.5">
+              <span class="text-[11px] font-black bg-purple-600 text-white px-2 py-0.5 rounded-md">
+                💎 最佳正期望值單打
+              </span>
+              <span v-if="bestValuePicks.midValue.calculatedEV > 0" class="text-xs font-mono font-black text-purple-300">
+                EV: +{{ bestValuePicks.midValue.calculatedEV }}%
+              </span>
+            </div>
+            <div class="text-base font-black text-white mt-1 flex items-baseline gap-2">
+              <span class="text-amber-400 font-mono text-lg font-black">#{{ bestValuePicks.midValue.horse_no }}</span>
+              <span class="font-black">{{ bestValuePicks.midValue.horse_name }}</span>
+              <span class="text-xs text-slate-300 font-normal">({{ bestValuePicks.midValue.draw }}檔)</span>
+            </div>
+            <div class="text-xs text-slate-300 mt-1.5 flex flex-wrap items-center gap-2">
+              <span class="text-amber-300 font-bold">獨贏: {{ bestValuePicks.midValue.market_odds || '-' }}倍</span>
+              <span>•</span>
+              <span class="text-sky-300 font-bold">位置: {{ bestValuePicks.midValue.place_odds || extractPlace(bestValuePicks.midValue) || '-' }}倍</span>
+            </div>
           </div>
-          <div class="text-base font-black text-white mt-1">
-            {{ predictions[0].horse_no }}號 {{ predictions[0].horse_name }}
-          </div>
-          <div class="text-white/80 text-[11px] mt-0.5">
-            {{ predictions[0].jockey }} • 實力馬膽 (預測勝率 {{ predictions[0].win_probability }}%)
+          <div class="mt-3 pt-2 border-t border-purple-500/20 text-[11px] text-purple-200 font-medium">
+            💡 建議：獨贏 1 份 + 位置 2 份單打
           </div>
         </div>
 
-        <div class="bg-black/15 rounded-xl p-3 backdrop-blur-sm border border-white/10">
-          <div class="text-amber-100 font-bold mb-1 flex items-center gap-1">
-            <span>⚡</span> 連贏 (Q) / 位置Q (QP)
+        <!-- 2. 實力防守馬膽 -->
+        <div v-if="bestValuePicks.banker" class="bg-gradient-to-b from-amber-950/60 to-amber-900/30 rounded-xl p-3.5 border border-amber-500/30 backdrop-blur-sm flex flex-col justify-between shadow-sm">
+          <div>
+            <div class="flex items-center justify-between mb-1.5">
+              <span class="text-[11px] font-black bg-amber-500 text-slate-950 px-2 py-0.5 rounded-md">
+                🎯 防守定海神針 (實力馬膽)
+              </span>
+              <span class="text-xs font-mono font-black text-amber-300">
+                勝率 {{ bestValuePicks.banker.win_probability }}%
+              </span>
+            </div>
+            <div class="text-base font-black text-white mt-1 flex items-baseline gap-2">
+              <span class="text-amber-400 font-mono text-lg font-black">#{{ bestValuePicks.banker.horse_no }}</span>
+              <span class="font-black">{{ bestValuePicks.banker.horse_name }}</span>
+              <span class="text-xs text-slate-300 font-normal">({{ bestValuePicks.banker.draw }}檔)</span>
+            </div>
+            <div class="text-xs text-slate-300 mt-1.5 flex flex-wrap items-center gap-2">
+              <span class="text-amber-300 font-bold">獨贏: {{ bestValuePicks.banker.market_odds || '-' }}倍</span>
+              <span>•</span>
+              <span class="text-sky-300 font-bold">位置: {{ bestValuePicks.banker.place_odds || extractPlace(bestValuePicks.banker) || '-' }}倍</span>
+            </div>
           </div>
-          <div class="text-sm font-black text-white mt-1">
-            馬膽：{{ predictions[0].horse_no }}號 拖 
-            <span v-for="(p, idx) in predictions.slice(1, 4)" :key="p.horse_code">
-              {{ p.horse_no }}號{{ idx < Math.min(predictions.length - 2, 2) ? '、' : '' }}
-            </span>
-          </div>
-          <div class="text-amber-200/90 text-[11px] mt-0.5 font-medium">
-            1膽3腳 • 歷史前四包辦連贏達 40.6%
+          <div class="mt-3 pt-2 border-t border-amber-500/20 text-[11px] text-amber-200 font-medium">
+            💡 建議：連贏(Q)/位置Q(QP)固定作單膽
           </div>
         </div>
 
-        <div class="bg-black/15 rounded-xl p-3 backdrop-blur-sm border border-white/10">
-          <div class="text-amber-100 font-bold mb-1 flex items-center gap-1">
-            <span>🔥</span> 單T / 四連環核心部隊
+        <!-- 3. 高爆發大冷門配腳 -->
+        <div v-if="bestValuePicks.longshot" class="bg-gradient-to-b from-rose-950/60 to-rose-900/30 rounded-xl p-3.5 border border-rose-500/30 backdrop-blur-sm flex flex-col justify-between shadow-sm">
+          <div>
+            <div class="flex items-center justify-between mb-1.5">
+              <span class="text-[11px] font-black bg-rose-600 text-white px-2 py-0.5 rounded-md">
+                🚀 外欄大冷門高回報
+              </span>
+              <span v-if="bestValuePicks.longshot.calculatedEV > 0" class="text-xs font-mono font-black text-rose-300">
+                EV: +{{ bestValuePicks.longshot.calculatedEV }}%
+              </span>
+            </div>
+            <div class="text-base font-black text-white mt-1 flex items-baseline gap-2">
+              <span class="text-amber-400 font-mono text-lg font-black">#{{ bestValuePicks.longshot.horse_no }}</span>
+              <span class="font-black">{{ bestValuePicks.longshot.horse_name }}</span>
+              <span class="text-xs text-slate-300 font-normal">({{ bestValuePicks.longshot.draw }}檔)</span>
+            </div>
+            <div class="text-xs text-slate-300 mt-1.5 flex flex-wrap items-center gap-2">
+              <span class="text-amber-300 font-bold">獨贏: {{ bestValuePicks.longshot.market_odds || '-' }}倍</span>
+              <span>•</span>
+              <span class="text-sky-300 font-bold">位置: {{ bestValuePicks.longshot.place_odds || extractPlace(bestValuePicks.longshot) || '-' }}倍</span>
+            </div>
           </div>
-          <div class="text-sm font-black text-white mt-1">
-            精選：
-            <span v-for="(p, idx) in predictions.slice(0, 5)" :key="p.horse_code">
-              {{ p.horse_no }}號{{ idx < Math.min(predictions.length - 1, 4) ? '、' : '' }}
-            </span>
+          <div class="mt-3 pt-2 border-t border-rose-500/20 text-[11px] text-rose-200 font-medium">
+            💡 建議：位置防守 / 拖入Q及單T冷腳
           </div>
-          <div class="text-white/80 text-[11px] mt-0.5">
-            前列綜合評分核心主力
-          </div>
+        </div>
+      </div>
+
+      <!-- 實戰組合注項速見條 -->
+      <div class="mt-3.5 pt-3 border-t border-white/10 flex flex-wrap items-center justify-between gap-2 text-xs">
+        <div class="flex items-center gap-1.5 flex-wrap">
+          <span class="text-amber-400 font-black">⚡ 連贏(Q) / 位置Q(QP) 1膽拖2腳：</span>
+          <span class="font-bold text-white bg-white/10 px-2 py-0.5 rounded">
+            {{ bestValuePicks.banker.horse_no }}號 拖 {{ bestValuePicks.midValue?.horse_no }}號、{{ bestValuePicks.longshot?.horse_no }}號 (共 2 注)
+          </span>
+        </div>
+        <div class="text-indigo-200/80 text-[11px]">
+          📊 依據 1/4 Kelly 注碼控制 • 期望值導向
         </div>
       </div>
     </div>
 
-    <!-- 馬匹預測排行榜 -->
+    <!-- 馬匹預測排行榜 (手機卡片化極致佈局) -->
     <div v-if="predictions.length > 0" class="space-y-2.5">
       <div 
         v-for="h in predictions" 
@@ -261,9 +319,10 @@
             :key="tag" 
             class="text-[11px] px-2 py-0.5 rounded-md font-medium"
             :class="{
+              'bg-purple-50 text-purple-700 border border-purple-200': tag.includes('期望值') || tag.includes('Kelly'),
               'bg-amber-50 text-amber-700 border border-amber-200': tag.includes('黃金') || tag.includes('頂級'),
               'bg-emerald-50 text-emerald-700 border border-emerald-200': tag.includes('眼罩') || tag.includes('舌帶'),
-              'bg-slate-100 text-slate-600': !tag.includes('黃金') && !tag.includes('眼罩') && !tag.includes('舌帶') && !tag.includes('頂級')
+              'bg-slate-100 text-slate-600': !tag.includes('期望值') && !tag.includes('Kelly') && !tag.includes('黃金') && !tag.includes('眼罩') && !tag.includes('舌帶') && !tag.includes('頂級')
             }"
           >
             {{ tag }}
@@ -385,7 +444,8 @@
               if (!selectedRaceId.value || !dayRaces.some(r => r.race_id === selectedRaceId.value)) {
                 selectedRaceId.value = dayRaces[0].race_id;
               }
-              await loadPredictions(selectedRaceId.value);
+              const targetRace = dayRaces.find(r => r.race_id === selectedRaceId.value) || dayRaces[0];
+              await loadPredictions(targetRace.race_id);
             }
           } catch (err) {
             console.error(err);
@@ -421,19 +481,67 @@
 
         const selectDate = (d) => {
           selectedDate.value = d;
-          const dayRaces = races.value.filter(r => r.race_date === d);
-          if (dayRaces.length > 0) {
-            selectedRaceId.value = dayRaces[0].race_id;
-            loadPredictions(selectedRaceId.value);
+          const first = currentDayRaces.value[0];
+          if (first) selectRace(first);
+        };
+
+        const bestValuePicks = computed(() => {
+          if (!predictions.value || predictions.value.length < 2) return null;
+
+          const banker = predictions.value[0];
+
+          const horsesWithEV = predictions.value.map(h => {
+            let ev = 0;
+            if (typeof h.combo_synergy === 'number' && h.combo_synergy !== 0) {
+              ev = h.combo_synergy;
+            } else if (h.market_odds && h.win_probability) {
+              ev = Math.round(((h.win_probability / 100.0) * h.market_odds - 1.0) * 1000) / 10;
+            }
+            return { ...h, calculatedEV: ev };
+          });
+
+          // 1. 中等冷門 (5.0 - 25.0 倍) 中 EV 最高的馬
+          const midCandidates = horsesWithEV.filter(h => h.horse_no !== banker.horse_no && h.market_odds >= 5.0 && h.market_odds <= 25.0);
+          midCandidates.sort((a, b) => b.calculatedEV - a.calculatedEV);
+          const bestMid = midCandidates.length > 0 ? midCandidates[0] : (predictions.value[1] || null);
+
+          // 2. 高回報冷門 (20.0 倍以上，或非 bestMid 中 EV 最高的冷馬)
+          const longCandidates = horsesWithEV.filter(h => 
+            h.horse_no !== banker.horse_no && 
+            (!bestMid || h.horse_no !== bestMid.horse_no) &&
+            h.market_odds >= 20.0
+          );
+          longCandidates.sort((a, b) => b.calculatedEV - a.calculatedEV);
+          const bestLong = longCandidates.length > 0 ? longCandidates[0] : (predictions.value[2] || null);
+
+          return {
+            banker: banker,
+            midValue: bestMid,
+            longshot: bestLong
+          };
+        });
+
+        const selectRace = async (r) => {
+          selectedRaceId.value = r.race_id;
+          if (!sbClient) return;
+          loading.value = true;
+          try {
+            const { data, error } = await sbClient
+              .from('race_predictions')
+              .select('*')
+              .eq('race_id', r.race_id)
+              .order('predicted_rank', { ascending: true });
+            if (error) throw error;
+            predictions.value = data || [];
+          } catch (e) {
+            console.error(e);
+          } finally {
+            loading.value = false;
           }
         };
 
-        const selectRace = (rId) => {
-          selectedRaceId.value = rId;
-          loadPredictions(rId);
-        };
-
         const extractPlace = (h) => {
+          if (!h) return null;
           if (h.place_odds) return h.place_odds;
           if (h.smart_tags && Array.isArray(h.smart_tags)) {
             const t = h.smart_tags.find(x => typeof x === 'string' && x.includes('位置賠率:'));
@@ -455,14 +563,19 @@
           selectedRaceId.value = 'demo_01';
           predictions.value = [
             {
-              horse_no: 6, horse_name: '當弗主力', horse_code: 'J037', draw: 2, jockey: '潘頓 / 蔡約翰', rating: 33, gear: 'PC1',
-              win_probability: 24.8, predicted_rank: 1, bet_strategy: '🎯 獨贏首選 / 核心馬膽', market_odds: 2.8, place_odds: 1.4,
+              horse_no: 6, horse_name: '當弗主力', horse_code: 'J037', draw: 2, jockey: '潘頓 / 蔡約翰', rating: 33, gear: 'PC1', weight: 126,
+              win_probability: 24.8, predicted_rank: 1, bet_strategy: '🎯 獨贏首選 / 實力馬膽', market_odds: 2.8, place_odds: 1.4, combo_synergy: -30.5,
               smart_tags: ['🎯 黃金內檔', '👓 首次眼罩 (變革)', '🔥 近況大勇', '⭐ 頂級騎師']
             },
             {
-              horse_no: 12, horse_name: '輕磅伏兵', horse_code: 'K209', draw: 1, jockey: '何澤堯 / 方嘉柏', rating: 28, gear: 'TT',
-              win_probability: 19.5, predicted_rank: 2, bet_strategy: '⚡ 次選主力', market_odds: 6.5, place_odds: 2.2, is_value_bet: true,
-              smart_tags: ['🎯 黃金內檔', '💎 賠率超值', '👅 繫舌帶', '⭐ 頂級騎師']
+              horse_no: 12, horse_name: '輕磅伏兵', horse_code: 'K209', draw: 1, jockey: '何澤堯 / 方嘉柏', rating: 28, gear: 'TT', weight: 120,
+              win_probability: 19.5, predicted_rank: 2, bet_strategy: '💎 價值突擊 (EV +26.8%)', market_odds: 6.5, place_odds: 2.2, is_value_bet: true, combo_synergy: 26.8,
+              smart_tags: ['🎯 黃金內檔', '💎 正期望值 EV: +26.8%', '📊 建議注碼: 1/4 Kelly (2.5%)', '👅 繫舌帶', '⭐ 頂級騎師']
+            },
+            {
+              horse_no: 8, horse_name: '冷門突擊', horse_code: 'L102', draw: 10, jockey: '周俊樂 / 韋達', rating: 26, gear: 'B', weight: 118,
+              win_probability: 8.2, predicted_rank: 3, bet_strategy: '💎 價值突擊 (EV +80.4%)', market_odds: 22.0, place_odds: 4.8, is_value_bet: true, combo_synergy: 80.4,
+              smart_tags: ['🚀 外欄利位', '💎 正期望值 EV: +80.4%', '📊 建議注碼: 1/4 Kelly (1.0%)']
             }
           ];
           noticeMsg.value = '✨ 目前展示的是示範預測。在右上角輸入 Supabase Key 後即可載入真實排位！';
@@ -480,7 +593,7 @@
           supabaseUrl, supabaseKey, showSettings, loading, noticeMsg,
           dates, selectedDate, currentDayRaces, currentRace, selectedRaceId,
           predictions, saveSettings, loadRaces, selectDate, selectRace, loadDemoData,
-          extractPlace
+          extractPlace, bestValuePicks
         };
       }
     }).mount('#app');
