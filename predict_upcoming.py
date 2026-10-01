@@ -7,13 +7,22 @@ import numpy as np
 from bs4 import BeautifulSoup
 from supabase import create_client
 
-# Supabase 連線設定（兼容本地與 GitHub Actions）
+# ==========================================
+# 🏇 香港賽馬 AI：純走位與檔位優勢模型（冷門爆發型）
+# 特點：完全不跟市場賠率（不隨大眾資金傾斜）
+# 核心維度：1~3檔內欄切入偏差 40% + 負磅損耗曲線 30% + 評分淨值 20% + 練馬師走位部屬 10%
+# ==========================================
+
 SUPABASE_URL = os.environ.get("SUPABASE_URL", "https://rxmkohhgznfcnhdqegwq.supabase.co")
 SUPABASE_KEY = os.environ.get("SUPABASE_KEY", "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InJ4bWtvaGhnem5mY25oZHFlZ3dxIiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc5MDQ5OTk2OCwiZXhwIjoyMTA2MDc1OTY4fQ.QUqbXyvQuVuulKbiaI0jC20aUw21l1vd4pjXWEryjuI")
 
-supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
+HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+    "Referer": "https://racing.on.cc/",
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"
+}
 
-# 🌟 Supabase 防斷線自動重試包裝器
+# 🌟 Supabase 防斷線自動重試包裝器 (徹底解決 RemoteProtocolError: ConnectionTerminated)
 def safe_db_op(op_func, max_retries=4):
     for attempt in range(1, max_retries + 1):
         try:
@@ -25,39 +34,12 @@ def safe_db_op(op_func, max_retries=4):
                 print(f"Supabase 寫入異常重試失敗: {e}")
                 raise e
 
-HEADERS = {
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-    "Referer": "https://bet.hkjc.com/ch/racing/wp/",
-    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"
-}
-
-# 🌟 1,448 場實戰回測認證之「頂級騎練長效統計加權」
-ELITE_JOCKEYS = {
-    "潘頓": 1.0, "布文": 0.92, "麥道朗": 0.95, "何澤堯": 0.88, 
-    "田泰安": 0.82, "艾兆禮": 0.82, "霍宏聲": 0.78, "巴度": 0.72,
-    "蔡明紹": 0.70, "班德禮": 0.70, "梁家俊": 0.68, "周俊樂": 0.65,
-    "袁幸堯": 0.60, "黃寶妮": 0.55
-}
-
+# 善打走位與內欄部屬之練馬師加權
 ELITE_TRAINERS = {
-    "蔡約翰": 0.92, "方嘉柏": 0.88, "沈集成": 0.88, "呂健威": 0.86,
-    "告東尼": 0.84, "廖康銘": 0.84, "伍鵬志": 0.85, "姚本輝": 0.80,
-    "文家良": 0.78, "賀賢": 0.76, "羅富全": 0.78, "蘇偉賢": 0.75,
-    "甘敏斯": 0.65, "黎昭昇": 0.70
+    "蔡約翰": 0.90, "方嘉柏": 0.85, "沈集成": 0.85, "呂健威": 0.85,
+    "告東尼": 0.80, "廖康銘": 0.82, "伍鵬志": 0.85, "賀賢": 0.88,
+    "文家良": 0.78, "羅富全": 0.78, "蘇偉賢": 0.75, "甘敏斯": 0.65, "黎昭昇": 0.70
 }
-
-def parse_gear_bonus(gear_str):
-    """1,448 場實戰回測標準配備評分"""
-    if not gear_str or gear_str == "-":
-        return 0.0
-    g = str(gear_str).upper()
-    bonus = 0.0
-    if re.search(r"B1|V1|PC1|P1", g): bonus += 0.08
-    elif re.search(r"B2|V2", g): bonus += 0.04
-    elif re.search(r"\bB\b|\bV\b|\bPC\b", g): bonus += 0.02
-    if "TT1" in g or "XB1" in g: bonus += 0.05
-    elif "TT" in g: bonus += 0.02
-    return bonus
 
 def parse_gear_tags(gear_str):
     if not gear_str or gear_str == "-": return []
@@ -93,9 +75,11 @@ def detect_upcoming_meeting():
 
     return "2026-10-01", "2026/10/01", "ST"
 
-def fetch_live_odds(date_str, venue, race_no):
+def fetch_live_odds(race_no):
+    """
+    即時抓取東網/馬會賠率 (僅供介面顯示與超值冷門參考，絕不干預純模型獨立排序)
+    """
     odds_map = {}
-    # 通道 1: 東網即時獨贏賠率 (全球 CDN 無阻擋，GitHub Actions 完美連線)
     url_oncc = f"https://racing.on.cc/racing/rat/current/rjratb{race_no:04d}x0.html"
     try:
         r = requests.get(url_oncc, headers=HEADERS, timeout=6)
@@ -115,74 +99,6 @@ def fetch_live_odds(date_str, venue, race_no):
                 return odds_map
     except Exception:
         pass
-    return odds_map
-
-
-    # 通道 2: 馬會官方 eWin 賠率備用
-    data_urls = [
-        f"https://bet.hkjc.com/racing/getJSON.aspx?type=winplaodds&date={date_str}&venue={venue}&start={race_no}&end={race_no}",
-        f"https://bet.hkjc.com/racing/getJSON.aspx?type=win&date={date_str}&venue={venue}&raceno={race_no}"
-    ]
-    for u in data_urls:
-        try:
-            r = requests.get(u, headers=HEADERS, timeout=5)
-            if r.status_code == 200 and r.text and "=" in r.text:
-                tokens = r.text.replace("&", ";").split(";")
-                for tok in tokens:
-                    if "=" in tok:
-                        parts = tok.split("=")
-                        if len(parts) == 2 and parts[0].strip().isdigit():
-                            h_no = int(parts[0].strip())
-                            val_part = parts[1].split(",")[0].strip()
-                            if re.match(r"^\d+(?:\.\d+)?$", val_part):
-                                val = float(val_part)
-                                if 1.0 <= val <= 999.0:
-                                    odds_map[h_no] = val
-                if odds_map:
-                    return odds_map
-        except Exception:
-            pass
-
-    return odds_map
-
-
-    # 通道 2: 直接解析 bet.hkjc.com/ch/racing/wp/{date}/{venue}/{race_no} 網頁表格
-    web_urls = [
-        f"https://bet.hkjc.com/ch/racing/wp/{date_str}/{venue}/{race_no}",
-        f"https://bet.hkjc.com/en/racing/wp/{date_str}/{venue}/{race_no}",
-        f"https://bet.hkjc.com/racing/pages/odds_wp.aspx?lang=ch&date={date_str}&venue={venue}&raceno={race_no}"
-    ]
-    for u in web_urls:
-        try:
-            r = requests.get(u, headers=HEADERS, timeout=6)
-            if r.status_code == 200 and r.text:
-                soup = BeautifulSoup(r.text, "html.parser")
-                for table in soup.find_all("table"):
-                    win_idx = None
-                    for tr in table.find_all("tr"):
-                        cells = [th.get_text(strip=True).lower() for th in tr.find_all(["th", "td"])]
-                        for i, name in enumerate(cells):
-                            if name in ("win", "獨贏", "獨贏賠率") and win_idx is None:
-                                win_idx = i
-                                break
-                        if win_idx is not None:
-                            break
-
-                    if win_idx is not None:
-                        for tr in table.find_all("tr"):
-                            tds = [td.get_text(strip=True) for td in tr.find_all(["td", "th"])]
-                            if len(tds) > win_idx and tds[0].isdigit():
-                                h_no = int(tds[0])
-                                val_str = tds[win_idx].replace("$", "").strip()
-                                if re.match(r"^\d+(?:\.\d+)?$", val_str):
-                                    val = float(val_str)
-                                    if 1.0 <= val <= 999.0:
-                                        odds_map[h_no] = val
-                    if odds_map:
-                        return odds_map
-        except Exception:
-            pass
-
     return odds_map
 
 def fetch_race_horses(date_hkjc, venue, race_no):
@@ -235,181 +151,135 @@ def fetch_race_horses(date_hkjc, venue, race_no):
                 h_idx["draw"] = i
             elif "練馬師" in h and "trainer" not in h_idx:
                 h_idx["trainer"] = i
-            elif "評分" in h and "國際" not in h and "+/-" not in h and "rating" not in h_idx:
+            elif "評分" in h and "+/-" not in h and "rating" not in h_idx:
                 h_idx["rating"] = i
             elif "配備" in h and "gear" not in h_idx:
                 h_idx["gear"] = i
 
-        if "horse_no" not in h_idx: continue
+        if "horse_no" not in h_idx or "horse_name" not in h_idx: continue
 
-        for r in tb.find_all("tr")[1:]:
-            cols = [td.text.strip() for td in r.find_all(["td", "th"])]
-            if len(cols) <= h_idx["horse_no"]: continue
-            raw_no = cols[h_idx["horse_no"]]
-            if not raw_no.isdigit(): continue
-            h_no = int(raw_no)
+        for tr in tb.find_all("tr")[1:]:
+            tds = [td.text.strip() for td in tr.find_all(["td", "th"])]
+            if len(tds) <= h_idx["horse_no"]: continue
+            val_no = tds[h_idx["horse_no"]]
+            if not val_no.isdigit(): continue
+            h_no = int(val_no)
+
+            raw_name = tds[h_idx["horse_name"]]
+            clean_name = re.sub(r"\s*\(.*?\)", "", raw_name).strip()
+            h_code = ""
+            cm = re.search(r"\(([A-Z0-9]+)\)", raw_name)
+            if cm: h_code = cm.group(1)
+            elif "horse_code" in h_idx and len(tds) > h_idx["horse_code"]:
+                h_code = tds[h_idx["horse_code"]].replace("(", "").replace(")", "").strip()
+
+            wt = 120
+            if "weight" in h_idx and len(tds) > h_idx["weight"]:
+                w_m = re.search(r"\d+", tds[h_idx["weight"]])
+                if w_m: wt = int(w_m.group(0))
+
+            jk = tds[h_idx["jockey"]] if "jockey" in h_idx and len(tds) > h_idx["jockey"] else ""
+            dr = 7
+            if "draw" in h_idx and len(tds) > h_idx["draw"]:
+                d_m = re.search(r"\d+", tds[h_idx["draw"]])
+                if d_m: dr = int(d_m.group(0))
+
+            tr_name = tds[h_idx["trainer"]] if "trainer" in h_idx and len(tds) > h_idx["trainer"] else ""
+            rt = 40
+            if "rating" in h_idx and len(tds) > h_idx["rating"]:
+                r_m = re.search(r"\d+", tds[h_idx["rating"]])
+                if r_m: rt = int(r_m.group(0))
+
+            gr = tds[h_idx["gear"]] if "gear" in h_idx and len(tds) > h_idx["gear"] else "-"
 
             if h_no not in runners_map:
                 runners_map[h_no] = {
-                    "horse_no": h_no,
-                    "horse_name": f"馬匹{h_no}",
-                    "horse_code": f"H{h_no}",
-                    "draw": 7,
-                    "weight": 120.0,
-                    "jockey": "",
-                    "trainer": "",
-                    "rating": 40,
-                    "gear": "-"
+                    "horse_no": h_no, "horse_code": h_code, "horse_name": clean_name,
+                    "weight": wt, "jockey": jk, "draw": dr, "trainer": tr_name,
+                    "rating": rt, "gear": gr
                 }
 
-            if "horse_name" in h_idx and h_idx["horse_name"] < len(cols):
-                val = cols[h_idx["horse_name"]]
-                cm = re.search(r"\((\w+)\)", val)
-                if cm: runners_map[h_no]["horse_code"] = cm.group(1)
-                clean_name = re.sub(r"[\s\xa0]*\(.*?\)", "", val).strip()
-                if clean_name and clean_name != "-" and not clean_name.isdigit():
-                    runners_map[h_no]["horse_name"] = clean_name
-
-            if "horse_code" in h_idx and h_idx["horse_code"] < len(cols):
-                val = cols[h_idx["horse_code"]].replace("(", "").replace(")", "").strip()
-                if val and len(val) >= 3 and not val.isdigit():
-                    runners_map[h_no]["horse_code"] = val
-
-            if "draw" in h_idx and h_idx["draw"] < len(cols) and cols[h_idx["draw"]].isdigit():
-                runners_map[h_no]["draw"] = int(cols[h_idx["draw"]])
-
-            if "weight" in h_idx and h_idx["weight"] < len(cols):
-                w_m = re.findall(r"\d+", cols[h_idx["weight"]])
-                if w_m: runners_map[h_no]["weight"] = float(w_m[0])
-
-            if "jockey" in h_idx and h_idx["jockey"] < len(cols):
-                val = cols[h_idx["jockey"]].strip()
-                if val and val != "-": runners_map[h_no]["jockey"] = val
-
-            if "trainer" in h_idx and h_idx["trainer"] < len(cols):
-                val = cols[h_idx["trainer"]].strip()
-                if val and val != "-": runners_map[h_no]["trainer"] = val
-
-            if "rating" in h_idx and h_idx["rating"] < len(cols):
-                val = cols[h_idx["rating"]].strip()
-                if val.isdigit(): runners_map[h_no]["rating"] = int(val)
-
-            if "gear" in h_idx and h_idx["gear"] < len(cols):
-                val = cols[h_idx["gear"]].strip()
-                if val and val not in ("--", "-"): runners_map[h_no]["gear"] = val
-
-    horses = []
-    for h_no, h in sorted(runners_map.items()):
-        horses.append(h)
-
-    meta = {"venue": venue, "distance": distance, "track_type": track, "course": course, "race_class": race_class}
+    horses = [runners_map[k] for k in sorted(runners_map.keys())]
+    meta = {
+        "venue": venue, "distance": distance, "track_type": track,
+        "course": course, "race_class": race_class
+    }
     return meta, horses
 
 def run_upcoming():
+    print("=== 香港賽馬 AI：純走位與檔位優勢模型（冷門爆發型，不跟市場賠率） ===")
     target_date, date_hkjc, venue = detect_upcoming_meeting()
-    print(f"=== 香港賽馬 AI 智能預測系統 (即將開跑賽事: {target_date} {venue}) ===")
-    print("🌟 依據「1,448場實戰回測認證標準」全面執行預測與賠率對齊\n")
+    print(f"賽事日期: {target_date} ({venue})")
 
     total_races = 0
+
     for race_no in range(1, 12):
         meta, horses = fetch_race_horses(date_hkjc, venue, race_no)
         if not meta or not horses:
-            if race_no == 1:
-                print(f"未能抓取到 {target_date} 第 1 場資料，請確認馬會官方是否已公佈完整排位。")
             break
 
         total_races += 1
         race_id = f"{target_date.replace('-', '')}_{venue}_{race_no:02d}"
 
-        # 1. 抓取即時賠率
-        odds_map = fetch_live_odds(target_date, venue, race_no)
+        # 1. 抓取即時賠率 (僅用於介面展示，不影響純走位獨立評分)
+        odds_map = fetch_live_odds(race_no)
 
-        # 2. 登記賽事基本資料
-        supabase.table("races").upsert({
+        # 2. 登記賽事資料 (防斷線重試)
+        safe_db_op(lambda: create_client(SUPABASE_URL, SUPABASE_KEY).table("races").upsert({
             "race_id": race_id, "race_date": target_date,
             "venue": meta["venue"], "race_no": race_no, "distance": meta["distance"],
             "track_type": meta["track_type"], "course": meta["course"],
             "race_class": meta["race_class"]
-        }).execute()
+        }).execute())
 
-        # 3. 🌟 嚴格依據 1,448 場實戰回測認證之「標準特徵打分」
-        # 特徵公式: (r_score * 0.35) + (w_score * 0.15) + (d_score * 0.15) + (jt_score * 0.30) + (g_score * 0.05)
-        # 加入見習騎師實質減磅修正 (如袁幸堯-7、黃寶妮-7)
-        actual_weights = []
-        for h in horses:
-            m_claim = re.search(r"\(-(\d+)\)", h["jockey"])
-            claim_lbs = int(m_claim.group(1)) if m_claim else 0
-            actual_weights.append(float(h["weight"]) - claim_lbs)
-
+        # 3. 🌟 「純走位與檔位優勢模型」核心評分公式
+        # 完全不理會市場賠率，專門鎖定 1~3檔內欄切入偏差與避開頂磅消耗之爆發型冷門
         avg_r = sum(float(h["rating"]) for h in horses) / len(horses) if horses else 40.0
-        avg_w = sum(actual_weights) / len(actual_weights) if actual_weights else 122.0
+        avg_w = sum(float(h["weight"]) for h in horses) / len(horses) if horses else 122.0
 
         scores = []
-        for i, h in enumerate(horses):
-            r_score = (float(h["rating"]) - avg_r) / 10.0
-            act_w = actual_weights[i]
-            w_score = (avg_w - act_w) / 10.0
-
+        for h in horses:
+            # (1) 檔位偏差權重 (40% 權重): 3檔為全場最佳黃金切入位 (出閘有空位、第二疊緊貼領放)
             draw = h["draw"]
-            if draw <= 3: d_score = 0.50
-            elif draw <= 7: d_score = 0.20
-            elif draw <= 10: d_score = -0.10
-            else: d_score = -0.40
+            if draw == 3: d_score = 0.55
+            elif draw <= 2: d_score = 0.45
+            elif draw <= 5: d_score = 0.20
+            elif draw <= 8: d_score = -0.05
+            elif draw <= 10: d_score = -0.25
+            else: d_score = -0.50  # 11-14 大外檔
 
-            # 清洗騎師與練馬師名稱 (去除括號減磅如 -7, -2 以精準匹配權重庫)
-            clean_j = re.sub(r"\s*\(.*?\)", "", h["jockey"]).strip()
+            # (2) 負磅損耗曲線 (30% 權重): 134磅以上頂磅重扣，125-130磅黃金發力區加分
+            wt = float(h["weight"])
+            if wt >= 134: w_score = -0.35
+            elif wt >= 131: w_score = -0.20
+            elif wt <= 122: w_score = +0.15
+            else: w_score = +0.10
+
+            # (3) 評分實力淨值 (20% 權重)
+            r_score = (float(h["rating"]) - avg_r) / 10.0
+
+            # (4) 善打內欄走位練馬師 (10% 權重)
             clean_t = re.sub(r"\s*\(.*?\)", "", h["trainer"]).strip()
+            t_score = ELITE_TRAINERS.get(clean_t, 0.70) - 0.70
 
-            j_score = ELITE_JOCKEYS.get(clean_j, 0.40)
-            t_score = ELITE_TRAINERS.get(clean_t, 0.45)
-            jt_score = (j_score * 0.70 + t_score * 0.30)
-
-            g_score = parse_gear_bonus(h["gear"])
-
-            # 1,448 場標準認證權重
-            total_feature = (r_score * 0.35) + (w_score * 0.15) + (d_score * 0.15) + (jt_score * 0.30) + (g_score * 0.05)
+            total_feature = (d_score * 0.40) + (w_score * 0.30) + (r_score * 0.20) + (t_score * 0.10)
             scores.append(total_feature)
 
-        # 4. 溫度縮放 Softmax 計算模型純勝率
+        # 4. Softmax 轉換獨立勝率 (100% 純模型預測，無市場融合干預)
         scores = np.array(scores)
-        exp_s = np.exp(scores * 2.0)
-        raw_probs = (exp_s / exp_s.sum()) * 100.0
-
-        # 5. 🌟 實戰 55% 貝氏融合 (回測勝率 30.5% 之核心靈魂)
-        has_odds = any(h["horse_no"] in odds_map and odds_map[h["horse_no"]] > 1.0 for h in horses)
-        if has_odds:
-            market_implied = []
-            for h in horses:
-                o = odds_map.get(h["horse_no"], 0.0)
-                market_implied.append(1.0 / o if o > 1.0 else 0.05)
-            sum_mkt = sum(market_implied)
-            mkt_probs = np.array([(m / sum_mkt) * 100.0 for m in market_implied])
-            final_probs = 0.55 * mkt_probs + 0.45 * raw_probs
-        else:
-            mkt_probs = np.zeros(len(horses))
-            final_probs = raw_probs
+        exp_s = np.exp(scores * 2.5)
+        probs = (exp_s / exp_s.sum()) * 100.0
 
         scored = []
         for i, h in enumerate(horses):
             h_no = h["horse_no"]
             odds = odds_map.get(h_no)
-            edge = float(raw_probs[i] - mkt_probs[i]) if has_odds else 0.0
 
             tags = parse_gear_tags(h["gear"])
             if h["draw"] <= 3: tags.append("🎯 黃金內檔")
             elif h["draw"] >= 11: tags.append("⚠️ 外檔考驗")
-            clean_j = re.sub(r"\s*\(.*?\)", "", h["jockey"]).strip()
-            if clean_j in ELITE_JOCKEYS: tags.append("🔥 頂級騎師")
-            if h.get("trainer"): tags.append(f"🎪 {h['trainer']}")
-            if h.get("weight"): tags.append(f"⚖️ {int(h['weight'])}磅")
-
-            # 標記高期望值超值馬 (回測 ROI 達 99.2% 的冷門伏兵)
-            is_val = False
-            if has_odds and odds and 3.5 <= odds <= 15.0 and edge >= 3.0:
-                tags.append("💎 賠率超值 (超額價值)")
-                is_val = True
-
-            j_pct = round(ELITE_JOCKEYS.get(clean_j, 0.40) * 100, 1)
+            if h["weight"] <= 124: tags.append("🪶 輕磅飛馳")
+            elif h["weight"] >= 134: tags.append("⚖️ 頂磅考驗")
 
             # 騎練雙全組合顯示
             jockey_trainer_str = f"{h['jockey']} / {h['trainer']}" if h.get("trainer") else h["jockey"]
@@ -421,28 +291,26 @@ def run_upcoming():
                 "horse_name": h["horse_name"],
                 "draw": h["draw"],
                 "jockey": jockey_trainer_str,
-                "win_probability": round(float(final_probs[i]), 2),
+                "weight": h["weight"],
+                "win_probability": round(float(probs[i]), 2),
                 "gear": h["gear"],
                 "rating": h["rating"],
                 "smart_tags": tags,
-                "combo_synergy": j_pct,
+                "combo_synergy": 0.0,
                 "market_odds": odds,
-                "is_value_bet": is_val
+                "is_value_bet": True if (odds and odds >= 8.0 and probs[i] >= 10.0) else False
             })
 
-        # 按融合勝率排序
+        # 按純走位勝率排序
         scored.sort(key=lambda x: x["win_probability"], reverse=True)
         final_payload = []
         for rank, item in enumerate(scored, 1):
-            odds = item["market_odds"] or 5.0
             if rank == 1:
-                strat = "🎯 獨贏首選 / 核心馬膽" if odds <= 8.0 else "⚡ 首選伏兵 / 冷門馬膽"
+                strat = "🎯 獨贏首選 / 內檔突擊冷膽"
             elif rank == 2:
-                strat = "⚡ 次選主力 / 連贏配腳"
+                strat = "⚡ 次選主力 / 黃金內檔"
             elif rank <= 4:
-                strat = "🛡️ 連贏配腳 / 四連環"
-            elif item["is_value_bet"]:
-                strat = "💎 價值突擊"
+                strat = "🛡️ 連贏配腳 / 冷門伏兵"
             else:
                 strat = ""
 
@@ -455,7 +323,7 @@ def run_upcoming():
                 "jockey": item["jockey"],
                 "win_probability": item["win_probability"],
                 "predicted_rank": rank,
-                "is_value_bet": item["is_value_bet"] or (rank <= 2),
+                "is_value_bet": item["is_value_bet"] or (rank <= 3),
                 "gear": item["gear"],
                 "rating": item["rating"],
                 "smart_tags": item["smart_tags"],
@@ -464,7 +332,7 @@ def run_upcoming():
                 "market_odds": item["market_odds"]
             })
 
-                # 寫入預測結果 (防 HTTP/2 RemoteProtocolError 斷線自動重建連線)
+        # 寫入預測結果 (防 HTTP/2 RemoteProtocolError 斷線自動重建連線)
         def _write_preds():
             c = create_client(SUPABASE_URL, SUPABASE_KEY)
             c.table("race_predictions").delete().eq("race_id", race_id).execute()
@@ -473,9 +341,9 @@ def run_upcoming():
 
         top_h = scored[0]
         odds_count = sum(1 for p in final_payload if p.get("market_odds") is not None)
-        print(f"  ✓ 第 {race_no} 場完成 (出賽: {len(horses)} 匹, 賠率匹配: {odds_count} 匹, 首選: {top_h['horse_name']} {top_h['horse_no']}號 [{top_h['jockey']}] 預測勝率:{top_h['win_probability']}%, 賠率:{top_h['market_odds']})")
+        print(f"  ✓ 第 {race_no} 場完成 (出賽: {len(horses)} 匹, 賠率匹配: {odds_count} 匹, 首選: {top_h['horse_no']}號 {top_h['horse_name']} [{top_h['draw']}檔/{top_h['weight']}磅], 勝率:{top_h['win_probability']}%, 賠率:{top_h['market_odds']})")
 
-    print(f"\n🎉 成功！已完成 {target_date} 共 {total_races} 場賽事預測與賠率更新並寫入 Supabase！")
+    print(f"\n🎉 成功！已完成 {target_date} 共 {total_races} 場純走位模型預測並寫入 Supabase！")
 
 if __name__ == "__main__":
     run_upcoming()
