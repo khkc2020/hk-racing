@@ -82,19 +82,8 @@ def detect_upcoming_meeting():
     return "2026-10-01", "2026/10/01", "ST"
 
 def fetch_live_odds(date_str, venue, race_no):
-    """
-    🌟 全方位即時賠率解析器：
-    支援 bet.hkjc.com/racing/getJSON.aspx 數據流 + bet.hkjc.com/ch/racing/wp/ 表格解析
-    """
-    def fetch_live_odds(date_str, venue, race_no):
-    """
-    🌟 全方位即時賠率解析器：
-    通道 1: 東網 (on.cc) 即時純靜態賠率鏡像（全球 CDN 無阻擋，GitHub Actions 完美連線）
-    通道 2: 馬會 bet.hkjc.com 備用
-    """
     odds_map = {}
-
-    # 通道 1: 東網即時獨贏賠率 (GitHub Actions 100% 能通)
+    # 通道 1: 東網即時獨贏賠率 (全球 CDN 無阻擋，GitHub Actions 完美連線)
     url_oncc = f"https://racing.on.cc/racing/rat/current/rjratb{race_no:04d}x0.html"
     try:
         r = requests.get(url_oncc, headers=HEADERS, timeout=6)
@@ -107,7 +96,6 @@ def fetch_live_odds(date_str, venue, race_no):
                     h_no = int(tds[0])
                     nums = [float(x) for x in tds[2:] if re.match(r'^\d+(\.\d+)?$', x)]
                     if nums:
-                        # 格式為 [WIN, PLA, WIN, PLA...]，倒數第2個為最新獨贏 WIN 賠率
                         win_odd = nums[-2] if (len(nums) >= 2 and len(nums) % 2 == 0) else nums[-1]
                         if 1.0 <= win_odd <= 999.0:
                             odds_map[h_no] = win_odd
@@ -115,6 +103,8 @@ def fetch_live_odds(date_str, venue, race_no):
                 return odds_map
     except Exception:
         pass
+    return odds_map
+
 
     # 通道 2: 馬會官方 eWin 賠率備用
     data_urls = [
