@@ -339,11 +339,12 @@ def fetch_odds_via_selenium(target_date, venue, race_no):
         chrome_options.add_argument("user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
 
         try:
+            # Selenium 4+ 優先自動偵測
+            driver = webdriver.Chrome(options=chrome_options)
+        except Exception:
             from selenium.webdriver.chrome.service import Service
             from webdriver_manager.chrome import ChromeDriverManager
             driver = webdriver.Chrome(service=Service(ChromeDriverManager().install()), options=chrome_options)
-        except Exception:
-            driver = webdriver.Chrome(options=chrome_options)
 
         driver.set_page_load_timeout(18)
         url = f"https://bet.hkjc.com/ch/racing/wp/{target_date}/{venue}/{race_no}"
@@ -563,6 +564,16 @@ def run_upcoming():
         race_id = f"{target_date.replace('-', '')}_{venue}_{race_no:02d}"
 
         odds_map = fetch_live_odds(race_no, target_date, venue)
+
+        # 標準化 odds_map: 確保每個條目均為字典結構 {'win': float, 'pla': float or None}
+        norm_odds_map = {}
+        for k, v in (odds_map or {}).items():
+            if isinstance(v, dict):
+                norm_odds_map[k] = v
+            elif isinstance(v, (int, float)):
+                norm_odds_map[k] = {"win": float(v), "pla": None}
+        odds_map = norm_odds_map
+
         tw_html = fetch_trackwork_text(date_hkjc, venue, race_no)
 
         safe_db_op(lambda: create_client(SUPABASE_URL, SUPABASE_KEY).table("races").upsert({
@@ -633,128 +644,4 @@ def run_upcoming():
                 (pillar_1 * 0.25) + 
                 (pillar_2 * 0.20) + 
                 (pillar_3 * 0.20) + 
-                (pillar_4 * 0.15) + 
-                (pillar_5 * 0.10) + 
-                (pillar_6 * 0.10)
-            )
-            scores.append(total_feature)
-            tags_meta[h_no] = list(set(h_tags))
-
-        # 計算純專業實力勝率
-        scores = np.array(scores)
-        exp_s = np.exp(scores * 2.2)
-        raw_probs = (exp_s / exp_s.sum()) * 100.0
-
-        # 🌟 20% 理性市場定價權行 (獨贏 70% + 位置 30% 綜合隱含機率)
-        # 80% 專業六維實力 + 20% 市場資金盤口權行
-        has_win_odds = any(h["horse_no"] in odds_map and (odds_map[h["horse_no"]].get("win") or 0) > 1.0 for h in horses)
-        if has_win_odds:
-            win_implied = np.array([1.0 / max(float(odds_map.get(h["horse_no"], {}).get("win", 20.0) or 20.0), 1.01) for h in horses])
-            win_probs = (win_implied / win_implied.sum()) * 100.0
-
-            has_pla_odds = any(h["horse_no"] in odds_map and (odds_map[h["horse_no"]].get("pla") or 0) > 1.0 for h in horses)
-            if has_pla_odds:
-                pla_implied = np.array([1.0 / max(float(odds_map.get(h["horse_no"], {}).get("pla", 5.0) or 5.0), 1.01) for h in horses])
-                pla_probs = (pla_implied / pla_implied.sum()) * 100.0
-                mkt_composite_probs = 0.70 * win_probs + 0.30 * pla_probs
-            else:
-                mkt_composite_probs = win_probs
-
-            final_probs = 0.80 * raw_probs + 0.20 * mkt_composite_probs
-        else:
-            final_probs = raw_probs
-
-        scored = []
-        for i, h in enumerate(horses):
-            h_no = h["horse_no"]
-            odds_info = odds_map.get(h_no, {})
-            win_odd = odds_info.get("win") if isinstance(odds_info, dict) else odds_info
-            pla_odd = odds_info.get("pla") if isinstance(odds_info, dict) else None
-
-            tags = tags_meta.get(h_no, [])
-            jockey_trainer_str = f"{h['jockey']} / {h['trainer']}" if h.get("trainer") else h["jockey"]
-
-            is_val = False
-            if win_odd and win_odd >= 6.0 and final_probs[i] >= 9.5:
-                is_val = True
-                tags.append(f"💎 今日高爆發冷馬 (獨贏{win_odd}倍)")
-            elif pla_odd and pla_odd >= 2.5 and final_probs[i] >= 11.0:
-                is_val = True
-                tags.append(f"🛡️ 穩健高回報冷位 (位置{pla_odd}倍)")
-
-            if pla_odd:
-                tags.append(f"位置賠率: {pla_odd}倍")
-
-            scored.append({
-                "race_id": race_id,
-                "horse_no": h_no,
-                "horse_code": h["horse_code"],
-                "horse_name": h["horse_name"],
-                "draw": h["draw"],
-                "jockey": jockey_trainer_str,
-                "weight": h["weight"],
-                "win_probability": round(float(final_probs[i]), 2),
-                "gear": h["gear"],
-                "rating": h["rating"],
-                "smart_tags": list(set(tags)),
-                "combo_synergy": 0.0,
-                "market_odds": win_odd,
-                "place_odds": pla_odd,
-                "is_value_bet": is_val
-            })
-
-        scored.sort(key=lambda x: x["win_probability"], reverse=True)
-        final_payload = []
-        for rank, item in enumerate(scored, 1):
-            if rank == 1:
-                strat = "🎯 獨贏首選 / 實力馬膽"
-            elif rank == 2:
-                strat = "⚡ 次選主力 / 黃金走位"
-            elif rank <= 4:
-                strat = "🛡️ 連贏配腳 / 高爆發冷門"
-            elif item["is_value_bet"]:
-                strat = "💎 價值突擊"
-            else:
-                strat = ""
-
-            final_payload.append({
-                "race_id": item["race_id"],
-                "horse_no": item["horse_no"],
-                "horse_code": item["horse_code"],
-                "horse_name": item["horse_name"],
-                "draw": item["draw"],
-                "jockey": item["jockey"],
-                "win_probability": item["win_probability"],
-                "predicted_rank": rank,
-                "is_value_bet": item["is_value_bet"] or (rank <= 3),
-                "gear": item["gear"],
-                "rating": item["rating"],
-                "smart_tags": item["smart_tags"],
-                "combo_synergy": item["combo_synergy"],
-                "bet_strategy": strat,
-                "market_odds": item["market_odds"],
-                "place_odds": item["place_odds"]
-            })
-
-        def _write_preds():
-            c = create_client(SUPABASE_URL, SUPABASE_KEY)
-            c.table("race_predictions").delete().eq("race_id", race_id).execute()
-            try:
-                c.table("race_predictions").insert(final_payload).execute()
-            except Exception as e:
-                # 若 Supabase race_predictions 尚未增加 place_odds 欄位，自動移除該鍵以防報錯
-                if "place_odds" in str(e).lower():
-                    clean_payload = [{k: v for k, v in row.items() if k != "place_odds"} for row in final_payload]
-                    c.table("race_predictions").insert(clean_payload).execute()
-                else:
-                    raise e
-        safe_db_op(_write_preds)
-
-        top_h = scored[0]
-        odds_count = sum(1 for p in final_payload if p.get("market_odds") is not None)
-        print(f"  ✓ 第 {race_no} 場完成 ({meta['distance']}米, 出賽: {len(horses)} 匹, 賠率涵蓋: {odds_count}匹, 首選: {top_h['horse_no']}號 {top_h['horse_name']} [{top_h['draw']}檔/{top_h['weight']}磅], 勝率:{top_h['win_probability']}%, 獨贏:{top_h['market_odds']}, 位置:{top_h['place_odds']})")
-
-    print(f"\n🎉 成功！已完成專業評馬人六維綜合預測並全部寫入 Supabase！")
-
-if __name__ == "__main__":
-    run_upcoming()
+                (pillar_4 * 0.15)
