@@ -86,15 +86,41 @@ def fetch_live_odds(date_str, venue, race_no):
     🌟 全方位即時賠率解析器：
     支援 bet.hkjc.com/racing/getJSON.aspx 數據流 + bet.hkjc.com/ch/racing/wp/ 表格解析
     """
+    def fetch_live_odds(date_str, venue, race_no):
+    """
+    🌟 全方位即時賠率解析器：
+    通道 1: 東網 (on.cc) 即時純靜態賠率鏡像（全球 CDN 無阻擋，GitHub Actions 完美連線）
+    通道 2: 馬會 bet.hkjc.com 備用
+    """
     odds_map = {}
 
-    # 通道 1: 馬會官方 eWin 賠率數據流 (格式: 1=6.4,2.3;2=6.7,2.7;... 逗號前提取獨贏 WIN)
+    # 通道 1: 東網即時獨贏賠率 (GitHub Actions 100% 能通)
+    url_oncc = f"https://racing.on.cc/racing/rat/current/rjratb{race_no:04d}x0.html"
+    try:
+        r = requests.get(url_oncc, headers=HEADERS, timeout=6)
+        if r.status_code == 200 and r.text:
+            r.encoding = "big5"
+            soup = BeautifulSoup(r.text, "html.parser")
+            for tr in soup.find_all("tr"):
+                tds = [td.get_text(strip=True) for td in tr.find_all(["td", "th"])]
+                if tds and tds[0].isdigit():
+                    h_no = int(tds[0])
+                    nums = [float(x) for x in tds[2:] if re.match(r'^\d+(\.\d+)?$', x)]
+                    if nums:
+                        # 格式為 [WIN, PLA, WIN, PLA...]，倒數第2個為最新獨贏 WIN 賠率
+                        win_odd = nums[-2] if (len(nums) >= 2 and len(nums) % 2 == 0) else nums[-1]
+                        if 1.0 <= win_odd <= 999.0:
+                            odds_map[h_no] = win_odd
+            if odds_map:
+                return odds_map
+    except Exception:
+        pass
+
+    # 通道 2: 馬會官方 eWin 賠率備用
     data_urls = [
         f"https://bet.hkjc.com/racing/getJSON.aspx?type=winplaodds&date={date_str}&venue={venue}&start={race_no}&end={race_no}",
-        f"https://bet.hkjc.com/racing/getJSON.aspx?type=winplaodds&date={date_str}&venue={venue}&raceno={race_no}",
         f"https://bet.hkjc.com/racing/getJSON.aspx?type=win&date={date_str}&venue={venue}&raceno={race_no}"
     ]
-
     for u in data_urls:
         try:
             r = requests.get(u, headers=HEADERS, timeout=5)
@@ -105,7 +131,7 @@ def fetch_live_odds(date_str, venue, race_no):
                         parts = tok.split("=")
                         if len(parts) == 2 and parts[0].strip().isdigit():
                             h_no = int(parts[0].strip())
-                            val_part = parts.split(",")[0].strip()
+                            val_part = parts[1].split(",")[0].strip()
                             if re.match(r"^\d+(?:\.\d+)?$", val_part):
                                 val = float(val_part)
                                 if 1.0 <= val <= 999.0:
@@ -114,6 +140,9 @@ def fetch_live_odds(date_str, venue, race_no):
                     return odds_map
         except Exception:
             pass
+
+    return odds_map
+
 
     # 通道 2: 直接解析 bet.hkjc.com/ch/racing/wp/{date}/{venue}/{race_no} 網頁表格
     web_urls = [
