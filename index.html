@@ -223,6 +223,18 @@
                 </span>
                 <span>•</span>
                 <span>配備: {{ h.gear || '-' }}</span>
+
+                const extractPlace = (h) => {
+  if (h.place_odds) return h.place_odds;
+  if (h.smart_tags && Array.isArray(h.smart_tags)) {
+    const t = h.smart_tags.find(x => typeof x === 'string' && x.includes('位置賠率:'));
+    if (t) {
+      const m = t.match(/(\d+(\.\d+)?)/);
+      if (m) return m[1];
+    }
+  }
+  return null;
+};
               </div>
             </div>
           </div>
