@@ -8,13 +8,13 @@ from bs4 import BeautifulSoup
 from supabase import create_client
 
 # ==============================================================================
-# 🏇 香港賽馬 AI：沙田 A 跑道「分途程檔位勝出率 + 實戰校準模型」
-# 🎯 嚴格依據 2024 至今香港馬會官方真實檔位統計與今日 R1、R2 賽果：
-#    1. 1000米(直路賽): 1-3檔內欄劣勢扣分(-0.40)，10-14檔看台外欄大幅加分(+0.45)
-#    2. 1200米(短途轉彎): 2-5檔黃金內欄統治(+0.45，驗證R1)，11-14大外檔重扣(-0.45)
-#    3. 1600米(一哩急彎): 3-6檔出閘順暢最佳(+0.45)，10-14大外檔重扣(-0.40)
-#    4. 負磅損耗: 134磅頂磅扣分，124-129磅黃金發力區加分
-#    5. 0% 市場賠率偏見: 徹底擺脫熱門倒灶拖累
+# 🏇 香港賽馬 AI：沙田 A 跑道「實力基石 + 平滑檔位矩陣 + 晨操狀態」平衡落地模型
+# 🎯 核心原則：
+#    1. 評分實力基石 (45%): 杜絕因檔位/負磅暴加而將 80-90 倍弱馬捧上第一的離地現象
+#    2. 平滑檔位矩陣 (20%): 1000m 看台外欄合理加分(+0.20)，轉彎內欄合理加分(+0.25)
+#    3. 負磅損耗曲線 (20%): 頂磅平滑扣分，中輕磅合理激勵
+#    4. 晨操狀態引擎 (15%): 結合試閘前三名與騎師親操
+#    5. 25% 理性市場定價錨定: 75% 實力與跑道走位 + 25% 賠率防瘋狂錨定
 # ==============================================================================
 
 SUPABASE_URL = os.environ.get("SUPABASE_URL", "https://rxmkohhgznfcnhdqegwq.supabase.co")
@@ -26,7 +26,6 @@ HEADERS = {
     "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"
 }
 
-# 🌟 Supabase 防斷線自動重試包裝器
 def safe_db_op(op_func, max_retries=4):
     for attempt in range(1, max_retries + 1):
         try:
@@ -38,44 +37,72 @@ def safe_db_op(op_func, max_retries=4):
                 print(f"Supabase 寫入異常重試失敗: {e}")
                 raise e
 
-# 2024 至今沙田 A 跑道官方真實分程檔位勝出率矩陣
+# 平滑化檔位優勢度 (邊際調整，絕不喧賓奪主壓倒實力)
 def get_shatin_a_draw_score(distance, draw):
     if distance == 1000:
-        # 直路賽：看台外欄極大利，1-3檔內欄吃風孤立極不利
-        if draw >= 10: return +0.45
-        elif draw >= 7: return +0.15
-        elif draw >= 4: return -0.10
-        else: return -0.40  # 1-3 檔劣勢
+        if draw >= 10: return +0.20
+        elif draw >= 7: return +0.08
+        elif draw >= 4: return -0.05
+        else: return -0.20
     elif distance == 1200:
-        # 短途急彎：2-5 檔統治 (R1 萬里雲3檔, 靖哥哥2檔, 新力驕4檔)
-        if 2 <= draw <= 5: return +0.45
-        elif draw == 1: return +0.25
+        if 2 <= draw <= 5: return +0.25
+        elif draw == 1: return +0.15
         elif 6 <= draw <= 8: return +0.05
-        elif 9 <= draw <= 10: return -0.20
-        else: return -0.45  # 大外檔轉彎嚴重蝕位
+        elif 9 <= draw <= 10: return -0.10
+        else: return -0.25
     elif distance == 1400:
-        # 1400米：長直路入彎，檔位較均勻，中內檔依然佔先
-        if 1 <= draw <= 6: return +0.30
+        if 1 <= draw <= 6: return +0.15
         elif 7 <= draw <= 9: return 0.00
-        else: return -0.30
+        else: return -0.15
     elif distance == 1600:
-        # 1600米：出閘 200 米即急彎，3-6檔最佳位，1-2檔慎防受困，外檔大蝕
-        if 3 <= draw <= 6: return +0.45
-        elif 1 <= draw <= 2: return +0.10
-        elif 7 <= draw <= 9: return -0.10
-        else: return -0.40
+        if 3 <= draw <= 6: return +0.25
+        elif 1 <= draw <= 2: return +0.08
+        elif 7 <= draw <= 9: return -0.05
+        else: return -0.20
     else:
-        # 1800米以上中長途：慢步速貼欄省體力為王
-        if 1 <= draw <= 4: return +0.40
-        elif 5 <= draw <= 8: return +0.10
-        else: return -0.35
+        if 1 <= draw <= 4: return +0.20
+        elif 5 <= draw <= 8: return +0.05
+        else: return -0.18
 
-# 今日發威與善戰之練馬師組合加權
-ELITE_TRAINERS = {
-    "賀賢": 0.95, "桂福特": 0.92, "韋達": 0.88, "甘敏斯": 0.85,
-    "蔡約翰": 0.88, "方嘉柏": 0.85, "沈集成": 0.85, "呂健威": 0.85,
-    "告東尼": 0.82, "伍鵬志": 0.85, "蘇偉賢": 0.82, "文家良": 0.80, "黎昭昇": 0.75
-}
+# 晨操與試閘動態狀態解析器
+def evaluate_trackwork(text, jockey_name):
+    if not text: return 0.0, []
+    clean_j = re.sub(r"\s*\(.*?\)", "", jockey_name).strip()
+    score = 0.0
+    tags = []
+
+    trials = re.findall(r"第\d+組\d+\s+.*?[草地|全天候|泥地]\s*(\d+)/(\d+)\s*\((.*?)\)", text)
+    for rank_str, total_str, j_rider in trials:
+        rank = int(rank_str)
+        if rank == 1:
+            score += 0.20
+            tags.append("🔥 晨操試閘第1名")
+        elif rank <= 3:
+            score += 0.12
+            tags.append("⭐ 晨操試閘前三名")
+        if clean_j and clean_j in j_rider:
+            score += 0.10
+            tags.append("🏇 騎師親自試閘")
+
+    gallops = re.findall(r"(\d{2}/\d{2}):\s*.*?(?:沙田|從化).*?(\d{2}\.\d)\s*\(.*?\)\s*\((.*?)\)", text)
+    if len(gallops) >= 3:
+        score += 0.15
+        tags.append("💪 賽前操足(3課+快跳)")
+    elif len(gallops) >= 1:
+        score += 0.08
+        tags.append("✨ 正常快跳備戰")
+
+    return score, list(set(tags))
+
+def fetch_trackwork_text(date_hkjc, venue, race_no):
+    url = f"https://racing.hkjc.com/racing/information/Chinese/Racing/LocalTrackwork.aspx?RaceDate={date_hkjc}&Racecourse={venue}&RaceNo={race_no}"
+    try:
+        r = requests.get(url, headers=HEADERS, timeout=8)
+        if r.status_code == 200:
+            return r.text
+    except Exception:
+        pass
+    return ""
 
 def parse_gear_tags(gear_str):
     if not gear_str or gear_str == "-": return []
@@ -238,7 +265,7 @@ def fetch_race_horses(date_hkjc, venue, race_no):
     return meta, horses
 
 def run_upcoming():
-    print("=== 🏇 香港賽馬 AI：沙田 A 跑道分途程檔位校準系統 ===")
+    print("=== 🏇 香港賽馬 AI：沙田 A 賽道理性實戰校準系統 ===")
     target_date, date_hkjc, venue = detect_upcoming_meeting()
     print(f"賽事日期: {target_date} ({venue}) | 賽道: A跑道")
 
@@ -252,10 +279,9 @@ def run_upcoming():
         total_races += 1
         race_id = f"{target_date.replace('-', '')}_{venue}_{race_no:02d}"
 
-        # 1. 抓取即時賠率 (僅用於介面展示，0% 權重干預預測)
         odds_map = fetch_live_odds(race_no)
+        tw_html = fetch_trackwork_text(date_hkjc, venue, race_no)
 
-        # 2. 登記賽事資料 (防斷線自動重試)
         safe_db_op(lambda: create_client(SUPABASE_URL, SUPABASE_KEY).table("races").upsert({
             "race_id": race_id, "race_date": target_date,
             "venue": meta["venue"], "race_no": race_no, "distance": meta["distance"],
@@ -267,43 +293,48 @@ def run_upcoming():
         avg_w = sum(float(h["weight"]) for h in horses) / len(horses) if horses else 122.0
         dist = meta["distance"]
 
-        # 3. 🌟 分程檔位勝出率矩陣 + 負磅損耗曲線
+        # 4. 🌟 實戰回歸理性架構：實力評分基石(45%) + 檔位走位(20%) + 負磅損耗(20%) + 晨操狀態(15%)
         scores = []
+        tw_meta = {}
         for h in horses:
-            draw = h["draw"]
-            # (1) 依據途程(1000m直路 vs 轉彎)精確調用官方勝率矩陣
-            d_score = get_shatin_a_draw_score(dist, draw)
+            h_no = h["horse_no"]
+            # (1) 評分實力基石 (45% 權重): 級數是根本，杜絕跨班逆轉
+            r_score = (float(h["rating"]) - avg_r) / 6.0
 
-            # (2) 負磅損耗曲線: 134磅頂磅扣分，124-129磅黃金發力區加分
+            # (2) 檔位偏差邊際調整 (20% 權重)
+            d_score = get_shatin_a_draw_score(dist, h["draw"])
+
+            # (3) 負磅損耗平滑曲線 (20% 權重)
             wt = float(h["weight"])
-            if wt >= 134: w_score = -0.35
-            elif wt >= 131: w_score = -0.18
-            elif 124 <= wt <= 129: w_score = +0.25 # 今日頭兩場奪冠黃金區間
-            elif wt < 124: w_score = +0.15
-            else: w_score = 0.0
+            w_score = (avg_w - wt) / 15.0
 
-            # (3) 評分實力淨值
-            r_score = (float(h["rating"]) - avg_r) / 10.0
+            # (4) 晨操與試閘動態狀態評分 (15% 權重)
+            tw_score, tw_tags = evaluate_trackwork(tw_html, h["jockey"])
+            tw_meta[h_no] = (tw_score, tw_tags)
 
-            # (4) 當旺練馬師加權
-            clean_t = re.sub(r"\s*\(.*?\)", "", h["trainer"]).strip()
-            t_score = ELITE_TRAINERS.get(clean_t, 0.75) - 0.75
-
-            # 總特徵打分: 檔位 45% + 負磅 25% + 評分 20% + 練馬師 10% (0% 市場賠率偏見)
-            total = (d_score * 0.45) + (w_score * 0.25) + (r_score * 0.20) + (t_score * 0.10)
+            total = (r_score * 0.45) + (d_score * 0.20) + (w_score * 0.20) + (tw_score * 0.15)
             scores.append(total)
 
-        # 4. Softmax 轉換獨立勝率
         scores = np.array(scores)
-        exp_s = np.exp(scores * 2.5)
-        probs = (exp_s / exp_s.sum()) * 100.0
+        exp_s = np.exp(scores * 2.0)
+        raw_probs = (exp_s / exp_s.sum()) * 100.0
+
+        # 🌟 5. 適度引入 25% 市場理性定價錨定 (75% 純實力跑道 + 25% 賠率防瘋狂錨定)
+        has_odds = any(h["horse_no"] in odds_map and odds_map[h["horse_no"]] > 1.0 for h in horses)
+        if has_odds:
+            mkt_implied = np.array([1.0 / odds_map.get(h["horse_no"], 20.0) for h in horses])
+            mkt_probs = (mkt_implied / mkt_implied.sum()) * 100.0
+            probs = 0.25 * mkt_probs + 0.75 * raw_probs
+        else:
+            probs = raw_probs
 
         scored = []
         for i, h in enumerate(horses):
             h_no = h["horse_no"]
             odds = odds_map.get(h_no)
+            tw_s, tw_tags = tw_meta.get(h_no, (0.0, []))
 
-            tags = parse_gear_tags(h["gear"])
+            tags = parse_gear_tags(h["gear"]) + tw_tags
             if dist == 1000:
                 if h["draw"] >= 10: tags.append("🚀 看台外欄利位")
                 elif h["draw"] <= 3: tags.append("⚠️ 直路內欄劣勢")
@@ -317,7 +348,6 @@ def run_upcoming():
 
             jockey_trainer_str = f"{h['jockey']} / {h['trainer']}" if h.get("trainer") else h["jockey"]
 
-            # 高爆發冷馬標註
             is_val = False
             if odds and odds >= 6.0 and probs[i] >= 9.5:
                 is_val = True
@@ -340,12 +370,11 @@ def run_upcoming():
                 "is_value_bet": is_val
             })
 
-        # 按今日校準走位勝率排序
         scored.sort(key=lambda x: x["win_probability"], reverse=True)
         final_payload = []
         for rank, item in enumerate(scored, 1):
             if rank == 1:
-                strat = "🎯 獨贏首選 / 跑道形勢馬膽"
+                strat = "🎯 獨贏首選 / 實力馬膽"
             elif rank == 2:
                 strat = "⚡ 次選主力 / 黃金走位"
             elif rank <= 4:
@@ -373,7 +402,6 @@ def run_upcoming():
                 "market_odds": item["market_odds"]
             })
 
-        # 寫入預測結果 (防 HTTP/2 斷線自動重建連線)
         def _write_preds():
             c = create_client(SUPABASE_URL, SUPABASE_KEY)
             c.table("race_predictions").delete().eq("race_id", race_id).execute()
@@ -384,7 +412,7 @@ def run_upcoming():
         odds_count = sum(1 for p in final_payload if p.get("market_odds") is not None)
         print(f"  ✓ 第 {race_no} 場完成 ({meta['distance']}米, 出賽: {len(horses)} 匹, 首選: {top_h['horse_no']}號 {top_h['horse_name']} [{top_h['draw']}檔/{top_h['weight']}磅], 勝率:{top_h['win_probability']}%, 賠率:{top_h['market_odds']})")
 
-    print(f"\n🎉 成功！已完成全日分途程檔位校準預測並寫入 Supabase！")
+    print(f"\n🎉 成功！已完成全日理性平衡校準預測並寫入 Supabase！")
 
 if __name__ == "__main__":
     run_upcoming()
