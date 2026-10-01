@@ -582,12 +582,18 @@
         };
 
         onMounted(() => {
-          if (initSupabase()) {
-            loadRaces();
-          } else {
-            loadDemoData();
-          }
-        });
+        if (initSupabase()) {
+        loadRaces();
+       // 每 60 秒在背景靜默更新一次最新預測與賠率
+        setInterval(() => {
+        if (selectedRaceId.value) {
+        loadPredictions(selectedRaceId.value);
+        }
+      }, 60000);
+  } else {
+    loadDemoData();
+  }
+});
 
         return {
           supabaseUrl, supabaseKey, showSettings, loading, noticeMsg,
