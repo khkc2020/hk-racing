@@ -339,7 +339,6 @@ def fetch_odds_via_selenium(target_date, venue, race_no):
         chrome_options.add_argument("user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
 
         try:
-            # Selenium 4+ 優先自動偵測
             driver = webdriver.Chrome(options=chrome_options)
         except Exception:
             from selenium.webdriver.chrome.service import Service
@@ -753,4 +752,19 @@ def run_upcoming():
             try:
                 c.table("race_predictions").insert(final_payload).execute()
             except Exception as e:
-                # 若 Supabase race_predictions 尚未增加 place_odds
+                # 若 Supabase race_predictions 尚未增加 place_odds 欄位，自動移除該鍵以防報錯
+                if "place_odds" in str(e).lower():
+                    clean_payload = [{k: v for k, v in row.items() if k != "place_odds"} for row in final_payload]
+                    c.table("race_predictions").insert(clean_payload).execute()
+                else:
+                    raise e
+        safe_db_op(_write_preds)
+
+        top_h = scored[0]
+        odds_count = sum(1 for p in final_payload if p.get("market_odds") is not None)
+        print(f"  ✓ 第 {race_no} 場完成 ({meta['distance']}米, 出賽: {len(horses)} 匹, 賠率涵蓋: {odds_count}匹, 首選: {top_h['horse_no']}號 {top_h['horse_name']} [{top_h['draw']}檔/{top_h['weight']}磅], 勝率:{top_h['win_probability']}%, 獨贏:{top_h['market_odds']}, 位置:{top_h['place_odds']})")
+
+    print(f"\n🎉 成功！已完成專業評馬人六維綜合預測並全部寫入 Supabase！")
+
+if __name__ == "__main__":
+    run_upcoming()
