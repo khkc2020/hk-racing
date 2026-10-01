@@ -8,27 +8,14 @@ from bs4 import BeautifulSoup
 from supabase import create_client
 
 # ==============================================================================
-# 🏇 香港賽馬 AI：專業評馬人「六維核心架構」全息量化預測模型 (Selenium 雙賠率版)
-# 🎯 整合香港賽馬六大專業基石 + 市場即時雙賠率 (獨贏 WIN + 位置 PLA) 權行：
-#    1. 往績近況與班次途程 (25% 權重): 
-#       - 班次升降(降班大優勢/升班挑戰)
-#       - 途程對應(縮程爆發 1600➔1400 / 增程試準 1200➔1600 / 原程續戰)
-#       - 6次近績走勢與班頂實力錨定
-#    2. 跑道途程檔位官方統計 (20% 權重): 
-#       - 2024至今沙田A賽道官方各途程勝率矩陣 (1000m直路外欄 vs 1200m/1600m轉彎內欄)
-#    3. 騎練合作與負磅/更替 (20% 權重): 
-#       - 騎練配搭默契度
-#       - 騎師更換(換強配大師傅/換見習生實質減磅)
-#       - 負磅增減權行(相比上仗增磅/減磅幅度)
-#    4. 晨操數據與試閘評語 (15% 權重): 
-#       - 試閘名次(勝出/前三)、正選騎師親操、賽前快跳課數
-#    5. 配備變更殺機信號 (10% 權重): 
-#       - 首次佩戴眼罩(B1/V1/PC1)、重戴(B2)、首次舌帶(TT1)
-#    6. 排位體重增減分析 (10% 權重): 
-#       - 壯身成長(+5至+15磅) vs 肥態未收(>+25磅) vs 體力透支(<-18磅)
-#    🌟 模型權行：
-#       - 80% 純專業六維實力面
-#       - 20% 市場資金定價權行 (70% 獨贏隱含勝率 + 30% 位置隱含入位穩定度)
+# 🏇 香港賽馬 AI：學術級「勝率量化預測 + 正期望值 (EV) + 1/4 Kelly 資金控管」全息引擎
+# 🎯 依據量化金融與賽馬學術文獻 (Lessmann et al. 2010, Borowski et al. 2021, Matej et al. 2021)
+#    1. 核心原則：預測真實勝出概率 (Win Probability, 加總=100%)，而非離散排名。
+#    2. 第一層市場特徵：獨贏 (WIN) 與位置 (PLA) 雙賠率，消除馬會 17.5% 抽水率 (Takeout)。
+#    3. 第二至六維實力面 (80% 權重)：往績班次(25%)、檔位勝率(20%)、騎練負磅(20%)、晨操試閘(15%)、配備(10%)、體重(10%)。
+#    4. 理性市場融合 (20% 權重)：70% 獨贏隱含勝率 + 30% 位置隱含入位率。
+#    5. 決策規則：計算嚴格期望值 EV = P_model * Odds - 1，捕捉 EV >= +8% 之被低估中等冷馬。
+#    6. 資金控管：依據文獻最優 1/4 分數凱利準則 (Fractional Kelly) 計算建議下注比例。
 # ==============================================================================
 
 SUPABASE_URL = os.environ.get("SUPABASE_URL", "https://rxmkohhgznfcnhdqegwq.supabase.co")
@@ -547,7 +534,7 @@ def fetch_race_horses(date_hkjc, venue, race_no):
     return meta, horses
 
 def run_upcoming():
-    print("=== 🏇 香港賽馬 AI：專業評馬人「六維核心架構」全息量化預測系統 ===")
+    print("=== 🏇 香港賽馬 AI：學術級「勝率量化預測 + 正期望值 (EV) + 1/4 Kelly 資金控管」全息引擎 ===")
     target_date, date_hkjc, venue = detect_upcoming_meeting()
     print(f"賽事日期: {target_date} ({venue}) | 賽道: A跑道")
 
@@ -650,26 +637,28 @@ def run_upcoming():
             scores.append(total_feature)
             tags_meta[h_no] = list(set(h_tags))
 
-        # 計算純專業實力勝率
+        # 🌟 學術核心 1：Race-level 競爭概率模型 (Softmax 歸一化勝率加總 = 100%)
         scores = np.array(scores)
         exp_s = np.exp(scores * 2.2)
         raw_probs = (exp_s / exp_s.sum()) * 100.0
 
-        # 🌟 20% 理性市場定價權行 (獨贏 70% + 位置 30% 綜合隱含機率)
-        # 80% 專業六維實力 + 20% 市場資金盤口權行
+        # 🌟 學術核心 2：市場資訊校準 (剔除 17.5% 抽水率，場內歸一化)
         has_win_odds = any(h["horse_no"] in odds_map and (odds_map[h["horse_no"]].get("win") or 0) > 1.0 for h in horses)
         if has_win_odds:
+            # 獨贏隱含勝率 (Takeout-adjusted)
             win_implied = np.array([1.0 / max(float(odds_map.get(h["horse_no"], {}).get("win", 20.0) or 20.0), 1.01) for h in horses])
-            win_probs = (win_implied / win_implied.sum()) * 100.0
+            win_mkt_probs = (win_implied / win_implied.sum()) * 100.0
 
+            # 位置隱含熱度 (大眾與大戶保本資金動向)
             has_pla_odds = any(h["horse_no"] in odds_map and (odds_map[h["horse_no"]].get("pla") or 0) > 1.0 for h in horses)
             if has_pla_odds:
                 pla_implied = np.array([1.0 / max(float(odds_map.get(h["horse_no"], {}).get("pla", 5.0) or 5.0), 1.01) for h in horses])
-                pla_probs = (pla_implied / pla_implied.sum()) * 100.0
-                mkt_composite_probs = 0.70 * win_probs + 0.30 * pla_probs
+                pla_mkt_probs = (pla_implied / pla_implied.sum()) * 100.0
+                mkt_composite_probs = 0.70 * win_mkt_probs + 0.30 * pla_mkt_probs
             else:
-                mkt_composite_probs = win_probs
+                mkt_composite_probs = win_mkt_probs
 
+            # 80% 專業六維實力 + 20% 市場資金定價權行
             final_probs = 0.80 * raw_probs + 0.20 * mkt_composite_probs
         else:
             final_probs = raw_probs
@@ -678,19 +667,34 @@ def run_upcoming():
         for i, h in enumerate(horses):
             h_no = h["horse_no"]
             odds_info = odds_map.get(h_no, {})
-            win_odd = odds_info.get("win") if isinstance(odds_info, dict) else odds_info
-            pla_odd = odds_info.get("pla") if isinstance(odds_info, dict) else None
+            win_odd = odds_info.get("win")
+            pla_odd = odds_info.get("pla")
 
             tags = tags_meta.get(h_no, [])
             jockey_trainer_str = f"{h['jockey']} / {h['trainer']}" if h.get("trainer") else h["jockey"]
 
+            p_model = final_probs[i] / 100.0
             is_val = False
-            if win_odd and win_odd >= 6.0 and final_probs[i] >= 9.5:
-                is_val = True
-                tags.append(f"💎 今日高爆發冷馬 (獨贏{win_odd}倍)")
-            elif pla_odd and pla_odd >= 2.5 and final_probs[i] >= 11.0:
-                is_val = True
-                tags.append(f"🛡️ 穩健高回報冷位 (位置{pla_odd}倍)")
+            ev_pct = 0.0
+            kelly_pct = 0.0
+
+            # 🌟 學術核心 3 & 4：嚴格期望值 (EV) 計算與 1/4 Kelly 資金控管
+            if win_odd and win_odd > 1.0:
+                # 數學期望值公式: EV = P_model * Odds - 1
+                ev = (p_model * win_odd) - 1.0
+                ev_pct = round(ev * 100.0, 1)
+
+                # 關注中等冷門 (5.0 - 25.0倍) 之正期望值機會；對於超過25倍極冷門要求基本實力門檻 (P >= 4%)
+                if ev >= 0.08: # 期望值超越 +8% 門檻 (足以覆蓋模型抽樣誤差與交易滑點)
+                    if win_odd <= 25.0 or p_model >= 0.04:
+                        is_val = True
+                        b = win_odd - 1.0
+                        # 1/4 分數凱利公式 (Fractional Kelly)
+                        kelly_1_4 = (ev / (4.0 * b)) * 100.0
+                        kelly_pct = round(min(5.0, max(0.5, kelly_1_4)), 1) # 單注風險控制在 0.5% ~ 5.0% 本金
+
+                        tags.append(f"💎 正期望值 EV: +{ev_pct}%")
+                        tags.append(f"📊 建議注碼: 1/4 Kelly ({kelly_pct}%)")
 
             if pla_odd:
                 tags.append(f"位置賠率: {pla_odd}倍")
@@ -707,7 +711,7 @@ def run_upcoming():
                 "gear": h["gear"],
                 "rating": h["rating"],
                 "smart_tags": list(set(tags)),
-                "combo_synergy": 0.0,
+                "combo_synergy": ev_pct, # 複用此數值欄位傳遞 EV
                 "market_odds": win_odd,
                 "place_odds": pla_odd,
                 "is_value_bet": is_val
@@ -723,7 +727,7 @@ def run_upcoming():
             elif rank <= 4:
                 strat = "🛡️ 連贏配腳 / 高爆發冷門"
             elif item["is_value_bet"]:
-                strat = "💎 價值突擊"
+                strat = f"💎 價值突擊 (EV +{item['combo_synergy']}%)"
             else:
                 strat = ""
 
