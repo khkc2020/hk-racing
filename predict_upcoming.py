@@ -7,11 +7,17 @@ import numpy as np
 from bs4 import BeautifulSoup
 from supabase import create_client
 
-# ==========================================
-# 🏇 香港賽馬 AI：純走位與檔位優勢模型（冷門爆發型）
-# 特點：完全不跟市場賠率（不隨大眾資金傾斜）
-# 核心維度：1~3檔內欄切入偏差 40% + 負磅損耗曲線 30% + 評分淨值 20% + 練馬師走位部屬 10%
-# ==========================================
+# ==============================================================================
+# 🏇 香港賽馬 AI：今日專屬臨場校準模型 (Today's Calibrated Track-Bias Model)
+# 🎯 依據 2026-10-01 沙田 A 賽道頭兩場實戰結果深度校準：
+#    【R1 驗證】：7號萬里雲(3檔/129磅) 12倍奪冠！2號靖哥哥(2檔)亞軍！(2.1倍大熱5號包尾)
+#    【R2 驗證】：9號開心三多(1檔/128磅)奪冠！大熱門(2.1倍/3.7倍)連續全軍覆沒！
+# 🔑 今日實戰核心修正法則：
+#    1. 零市場偏見（0% Odds Weight）：徹底剔除市場賠率盲從，專抓走位好、有分頭的真實良駒。
+#    2. 轉彎賽事極限內欄加權（45%）：沙田 A 欄 1~3 檔享有絕對貼欄省腳程優勢。
+#    3. 直路賽(1000米)特別切換：1000 米直路賽自動切換為外欄看台優勢（大檔位有利）。
+#    4. 頂磅損耗與輕磅爆發（25%）：134磅以上頂磅嚴格壓抑，124~129磅中輕磅黃金衝刺區大幅加分。
+# ==============================================================================
 
 SUPABASE_URL = os.environ.get("SUPABASE_URL", "https://rxmkohhgznfcnhdqegwq.supabase.co")
 SUPABASE_KEY = os.environ.get("SUPABASE_KEY", "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InJ4bWtvaGhnem5mY25oZHFlZ3dxIiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc5MDQ5OTk2OCwiZXhwIjoyMTA2MDc1OTY4fQ.QUqbXyvQuVuulKbiaI0jC20aUw21l1vd4pjXWEryjuI")
@@ -34,11 +40,11 @@ def safe_db_op(op_func, max_retries=4):
                 print(f"Supabase 寫入異常重試失敗: {e}")
                 raise e
 
-# 善打走位與內欄部屬之練馬師加權
+# 今日發威與善戰之練馬師組合加權
 ELITE_TRAINERS = {
-    "蔡約翰": 0.90, "方嘉柏": 0.85, "沈集成": 0.85, "呂健威": 0.85,
-    "告東尼": 0.80, "廖康銘": 0.82, "伍鵬志": 0.85, "賀賢": 0.88,
-    "文家良": 0.78, "羅富全": 0.78, "蘇偉賢": 0.75, "甘敏斯": 0.65, "黎昭昇": 0.70
+    "賀賢": 0.95, "桂福特": 0.92, "韋達": 0.88, "甘敏斯": 0.85,
+    "蔡約翰": 0.88, "方嘉柏": 0.85, "沈集成": 0.85, "呂健威": 0.85,
+    "告東尼": 0.82, "伍鵬志": 0.85, "蘇偉賢": 0.82, "文家良": 0.80, "黎昭昇": 0.75
 }
 
 def parse_gear_tags(gear_str):
@@ -76,9 +82,7 @@ def detect_upcoming_meeting():
     return "2026-10-01", "2026/10/01", "ST"
 
 def fetch_live_odds(race_no):
-    """
-    即時抓取東網/馬會賠率 (僅供介面顯示與超值冷門參考，絕不干預純模型獨立排序)
-    """
+    """即時抓取東網/馬會賠率 (僅用於介面展示與標註賠率超值，完全不干涉純走位排名)"""
     odds_map = {}
     url_oncc = f"https://racing.on.cc/racing/rat/current/rjratb{race_no:04d}x0.html"
     try:
@@ -125,7 +129,7 @@ def fetch_race_horses(date_hkjc, venue, race_no):
     course = course_m.group(1) if course_m else None
 
     race_class = "第四班"
-    for c in ("第一班", "第二班", "第三班", "第四班", "第五班"):
+    for c in ("第一班", "第二班", "第三班", "第四班", "第五班", "三級賽", "二級賽", "一級賽"):
         if c in race_text: race_class = c; break
 
     runners_map = {}
@@ -207,9 +211,9 @@ def fetch_race_horses(date_hkjc, venue, race_no):
     return meta, horses
 
 def run_upcoming():
-    print("=== 香港賽馬 AI：純走位與檔位優勢模型（冷門爆發型，不跟市場賠率） ===")
+    print("=== 🏇 香港賽馬 AI：今日專屬臨場校準預測系統 ===")
     target_date, date_hkjc, venue = detect_upcoming_meeting()
-    print(f"賽事日期: {target_date} ({venue})")
+    print(f"賽事日期: {target_date} ({venue}) | 賽道: A跑道")
 
     total_races = 0
 
@@ -221,10 +225,10 @@ def run_upcoming():
         total_races += 1
         race_id = f"{target_date.replace('-', '')}_{venue}_{race_no:02d}"
 
-        # 1. 抓取即時賠率 (僅用於介面展示，不影響純走位獨立評分)
+        # 1. 抓取即時賠率 (僅用於介面展示，0% 權重干預預測)
         odds_map = fetch_live_odds(race_no)
 
-        # 2. 登記賽事資料 (防斷線重試)
+        # 2. 登記賽事資料 (防斷線自動重試)
         safe_db_op(lambda: create_client(SUPABASE_URL, SUPABASE_KEY).table("races").upsert({
             "race_id": race_id, "race_date": target_date,
             "venue": meta["venue"], "race_no": race_no, "distance": meta["distance"],
@@ -232,40 +236,50 @@ def run_upcoming():
             "race_class": meta["race_class"]
         }).execute())
 
-        # 3. 🌟 「純走位與檔位優勢模型」核心評分公式
-        # 完全不理會市場賠率，專門鎖定 1~3檔內欄切入偏差與避開頂磅消耗之爆發型冷門
         avg_r = sum(float(h["rating"]) for h in horses) / len(horses) if horses else 40.0
         avg_w = sum(float(h["weight"]) for h in horses) / len(horses) if horses else 122.0
+        dist = meta["distance"]
 
+        # 3. 🌟 今日實戰極限校準演算法 (Calibrated Formula)
         scores = []
         for h in horses:
-            # (1) 檔位偏差權重 (40% 權重): 3檔為全場最佳黃金切入位 (出閘有空位、第二疊緊貼領放)
             draw = h["draw"]
-            if draw == 3: d_score = 0.55
-            elif draw <= 2: d_score = 0.45
-            elif draw <= 5: d_score = 0.20
-            elif draw <= 8: d_score = -0.05
-            elif draw <= 10: d_score = -0.25
-            else: d_score = -0.50  # 11-14 大外檔
+            # (1) 檔位偏差: 轉彎賽事(1200-1800m) A欄內欄黃金貼欄法則；1000m直路賽外欄看台法則
+            if dist == 1000 and "全天候" not in meta["track_type"]:
+                # 直路賽看台外欄優勢 (10-14 檔最佳)
+                if draw >= 10: d_score = 0.50
+                elif draw >= 7: d_score = 0.20
+                elif draw >= 4: d_score = -0.10
+                else: d_score = -0.30
+            else:
+                # 轉彎賽事極限內欄優勢 (今日 R1, R2 實戰驗證: 1~3檔完全統治頭馬與前列)
+                if draw == 3: d_score = 0.60       # 3檔: 最佳切入好位 (R1萬里雲頭馬)
+                elif draw <= 2: d_score = 0.50     # 1,2檔: 絕對貼欄 (R2開心三多頭馬/R1靖哥哥亞軍)
+                elif draw <= 5: d_score = 0.20
+                elif draw <= 8: d_score = -0.05
+                elif draw <= 10: d_score = -0.25
+                else: d_score = -0.50              # 大外檔轉彎蝕位
 
-            # (2) 負磅損耗曲線 (30% 權重): 134磅以上頂磅重扣，125-130磅黃金發力區加分
+            # (2) 負磅損耗曲線: 134磅頂磅扣分，124-129磅黃金發力區加分
             wt = float(h["weight"])
-            if wt >= 134: w_score = -0.35
-            elif wt >= 131: w_score = -0.20
-            elif wt <= 122: w_score = +0.15
-            else: w_score = +0.10
+            if wt >= 134: w_score = -0.35          # 頂磅消耗嚴苛
+            elif wt >= 131: w_score = -0.18
+            elif 124 <= wt <= 129: w_score = +0.25 # 今日贏馬之黃金負磅區間 (128磅、129磅)
+            elif wt < 124: w_score = +0.15
+            else: w_score = 0.0
 
-            # (3) 評分實力淨值 (20% 權重)
+            # (3) 評分實力淨值
             r_score = (float(h["rating"]) - avg_r) / 10.0
 
-            # (4) 善打內欄走位練馬師 (10% 權重)
+            # (4) 今日當旺與善戰練馬師加權
             clean_t = re.sub(r"\s*\(.*?\)", "", h["trainer"]).strip()
-            t_score = ELITE_TRAINERS.get(clean_t, 0.70) - 0.70
+            t_score = ELITE_TRAINERS.get(clean_t, 0.75) - 0.75
 
-            total_feature = (d_score * 0.40) + (w_score * 0.30) + (r_score * 0.20) + (t_score * 0.10)
-            scores.append(total_feature)
+            # 總特徵: 檔位 45% + 負磅 25% + 評分 20% + 練馬師 10% (0% 市場賠率偏見)
+            total = (d_score * 0.45) + (w_score * 0.25) + (r_score * 0.20) + (t_score * 0.10)
+            scores.append(total)
 
-        # 4. Softmax 轉換獨立勝率 (100% 純模型預測，無市場融合干預)
+        # 4. Softmax 轉換獨立勝率
         scores = np.array(scores)
         exp_s = np.exp(scores * 2.5)
         probs = (exp_s / exp_s.sum()) * 100.0
@@ -276,13 +290,22 @@ def run_upcoming():
             odds = odds_map.get(h_no)
 
             tags = parse_gear_tags(h["gear"])
-            if h["draw"] <= 3: tags.append("🎯 黃金內檔")
-            elif h["draw"] >= 11: tags.append("⚠️ 外檔考驗")
-            if h["weight"] <= 124: tags.append("🪶 輕磅飛馳")
+            if dist == 1000:
+                if h["draw"] >= 10: tags.append("🚀 看台外欄利位")
+            else:
+                if h["draw"] <= 3: tags.append("🎯 今日黃金內欄")
+                elif h["draw"] >= 11: tags.append("⚠️ 外檔蝕位考驗")
+
+            if 124 <= h["weight"] <= 129: tags.append("⚡ 今日黃金負磅區")
             elif h["weight"] >= 134: tags.append("⚖️ 頂磅考驗")
 
-            # 騎練雙全組合顯示
             jockey_trainer_str = f"{h['jockey']} / {h['trainer']}" if h.get("trainer") else h["jockey"]
+
+            # 判斷是否為今日高期望值價值馬 (賠率 6.0~25.0 且 走位評分極佳)
+            is_val = False
+            if odds and odds >= 6.0 and probs[i] >= 9.5:
+                is_val = True
+                tags.append("💎 今日高爆發冷馬")
 
             scored.append({
                 "race_id": race_id,
@@ -298,19 +321,21 @@ def run_upcoming():
                 "smart_tags": tags,
                 "combo_synergy": 0.0,
                 "market_odds": odds,
-                "is_value_bet": True if (odds and odds >= 8.0 and probs[i] >= 10.0) else False
+                "is_value_bet": is_val
             })
 
-        # 按純走位勝率排序
+        # 按今日校準走位勝率排序
         scored.sort(key=lambda x: x["win_probability"], reverse=True)
         final_payload = []
         for rank, item in enumerate(scored, 1):
             if rank == 1:
-                strat = "🎯 獨贏首選 / 內檔突擊冷膽"
+                strat = "🎯 獨贏首選 / 內檔突擊馬膽"
             elif rank == 2:
-                strat = "⚡ 次選主力 / 黃金內檔"
+                strat = "⚡ 次選主力 / 黃金走位"
             elif rank <= 4:
-                strat = "🛡️ 連贏配腳 / 冷門伏兵"
+                strat = "🛡️ 連贏配腳 / 高爆發冷門"
+            elif item["is_value_bet"]:
+                strat = "💎 價值突擊"
             else:
                 strat = ""
 
@@ -332,7 +357,7 @@ def run_upcoming():
                 "market_odds": item["market_odds"]
             })
 
-        # 寫入預測結果 (防 HTTP/2 RemoteProtocolError 斷線自動重建連線)
+        # 寫入預測結果 (防 HTTP/2 斷線自動重建連線)
         def _write_preds():
             c = create_client(SUPABASE_URL, SUPABASE_KEY)
             c.table("race_predictions").delete().eq("race_id", race_id).execute()
@@ -343,7 +368,7 @@ def run_upcoming():
         odds_count = sum(1 for p in final_payload if p.get("market_odds") is not None)
         print(f"  ✓ 第 {race_no} 場完成 (出賽: {len(horses)} 匹, 賠率匹配: {odds_count} 匹, 首選: {top_h['horse_no']}號 {top_h['horse_name']} [{top_h['draw']}檔/{top_h['weight']}磅], 勝率:{top_h['win_probability']}%, 賠率:{top_h['market_odds']})")
 
-    print(f"\n🎉 成功！已完成 {target_date} 共 {total_races} 場純走位模型預測並寫入 Supabase！")
+    print(f"\n🎉 成功！已完成今日專屬校準預測並全部寫入 Supabase！")
 
 if __name__ == "__main__":
     run_upcoming()
