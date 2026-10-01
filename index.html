@@ -24,7 +24,7 @@
           <span class="text-3xl">🏇</span>
           <h1 class="text-xl sm:text-2xl font-black text-slate-900 tracking-tight">香港賽馬 AI 智能預測系統</h1>
         </div>
-        <p class="text-xs text-slate-500 mt-0.5">評分實力平衡 • 頂級騎練加權 • 實戰貝氏融合 • 官方即時賠率</p>
+        <p class="text-xs text-slate-500 mt-0.5">評分實力平衡 • 頂級騎練加權 • 實戰貝氏融合 • 官方即時雙賠率</p>
       </div>
       <div class="flex items-center gap-2">
         <button 
@@ -43,7 +43,7 @@
       </div>
     </header>
 
-    <!-- 📊 歷史大數據實戰回測認證指標條 (1,448 場真實賽果) -->
+    <!-- 📊 歷史大數據實戰回測認證指標條 -->
     <div class="my-3 px-3.5 py-2.5 bg-gradient-to-r from-slate-900 via-indigo-950 to-slate-900 rounded-xl text-white shadow-sm flex flex-wrap items-center justify-between gap-2 border border-indigo-900/50">
       <div class="flex items-center gap-2">
         <span class="text-lg">📊</span>
@@ -216,25 +216,21 @@
               <div class="text-xs text-slate-500 mt-1 flex flex-wrap items-center gap-1.5">
                 <span>🏇 {{ h.jockey }}</span>
                 <span>•</span>
+                <!-- 評分及緊貼右旁的獨贏/位置賠率 -->
                 <span>評分: <strong class="text-slate-700">{{ h.rating || '-' }}</strong></span>
-                <span>•</span>
                 <span v-if="h.market_odds" class="text-amber-700 font-bold bg-amber-50 px-1.5 py-0.5 rounded border border-amber-200">
-                  賠率: {{ h.market_odds }}倍
+                  獨贏: {{ h.market_odds }}倍
                 </span>
+                <span v-if="h.place_odds || extractPlace(h)" class="text-sky-700 font-bold bg-sky-50 px-1.5 py-0.5 rounded border border-sky-200">
+                  位置: {{ h.place_odds || extractPlace(h) }}倍
+                </span>
+                <span v-if="!h.market_odds && !h.place_odds && !extractPlace(h)" class="text-slate-400 bg-slate-100 px-1.5 py-0.5 rounded text-[11px]">
+                  賠率: 待開盤
+                </span>
+                <span v-if="h.weight">•</span>
+                <span v-if="h.weight">負磅: <strong class="text-slate-700">{{ h.weight }}磅</strong></span>
                 <span>•</span>
                 <span>配備: {{ h.gear || '-' }}</span>
-
-                const extractPlace = (h) => {
-  if (h.place_odds) return h.place_odds;
-  if (h.smart_tags && Array.isArray(h.smart_tags)) {
-    const t = h.smart_tags.find(x => typeof x === 'string' && x.includes('位置賠率:'));
-    if (t) {
-      const m = t.match(/(\d+(\.\d+)?)/);
-      if (m) return m[1];
-    }
-  }
-  return null;
-};
               </div>
             </div>
           </div>
@@ -437,6 +433,18 @@
           loadPredictions(rId);
         };
 
+        const extractPlace = (h) => {
+          if (h.place_odds) return h.place_odds;
+          if (h.smart_tags && Array.isArray(h.smart_tags)) {
+            const t = h.smart_tags.find(x => typeof x === 'string' && x.includes('位置賠率:'));
+            if (t) {
+              const m = t.match(/(\d+(\.\d+)?)/);
+              if (m) return m[1];
+            }
+          }
+          return null;
+        };
+
         const loadDemoData = () => {
           dates.value = ['2026-10-01'];
           races.value = [
@@ -448,12 +456,12 @@
           predictions.value = [
             {
               horse_no: 6, horse_name: '當弗主力', horse_code: 'J037', draw: 2, jockey: '潘頓 / 蔡約翰', rating: 33, gear: 'PC1',
-              win_probability: 24.8, predicted_rank: 1, bet_strategy: '🎯 獨贏首選 / 核心馬膽', market_odds: 2.8,
+              win_probability: 24.8, predicted_rank: 1, bet_strategy: '🎯 獨贏首選 / 核心馬膽', market_odds: 2.8, place_odds: 1.4,
               smart_tags: ['🎯 黃金內檔', '👓 首次眼罩 (變革)', '🔥 近況大勇', '⭐ 頂級騎師']
             },
             {
               horse_no: 12, horse_name: '輕磅伏兵', horse_code: 'K209', draw: 1, jockey: '何澤堯 / 方嘉柏', rating: 28, gear: 'TT',
-              win_probability: 19.5, predicted_rank: 2, bet_strategy: '⚡ 次選主力', market_odds: 6.5, is_value_bet: true,
+              win_probability: 19.5, predicted_rank: 2, bet_strategy: '⚡ 次選主力', market_odds: 6.5, place_odds: 2.2, is_value_bet: true,
               smart_tags: ['🎯 黃金內檔', '💎 賠率超值', '👅 繫舌帶', '⭐ 頂級騎師']
             }
           ];
@@ -471,7 +479,8 @@
         return {
           supabaseUrl, supabaseKey, showSettings, loading, noticeMsg,
           dates, selectedDate, currentDayRaces, currentRace, selectedRaceId,
-          predictions, saveSettings, loadRaces, selectDate, selectRace, loadDemoData
+          predictions, saveSettings, loadRaces, selectDate, selectRace, loadDemoData,
+          extractPlace
         };
       }
     }).mount('#app');
