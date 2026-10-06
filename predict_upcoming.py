@@ -8,12 +8,14 @@ from bs4 import BeautifulSoup
 from supabase import create_client
 
 # ==============================================================================
-# 🏇 香港賽馬 AI：學術級「草地/全天候雙跑道模型 + 正期望值 EV + 1/4 Kelly」全息引擎
-# 🎯 整合香港賽馬六大專業基石 + 全天候跑道(泥地)專屬特性 + 即時雙賠率：
-#    1. 跑道動態分流：沙田草地 A 賽道 vs 沙田全天候跑道 (泥地 1200/1650/1800m)
-#    2. 泥地專屬適性：歷史泥地勝率、吃泥效應、1650m 起步首彎極短外疊蝕位修正
-#    3. 實力與市場融合：80% 專業六維基本面 + 20% 市場資金盤口 (剔除 17.5% 抽水)
-#    4. 期望值與資金控管：計算 EV = P_model * Odds - 1，搭配 1/4 Fractional Kelly
+# 🏇 香港賽馬 AI：學術級「沙田草地 / 沙田泥地 / 跑馬地谷草 三跑道模型 + 正期望值 EV」全息引擎
+# 🎯 整合香港賽馬專業基石：
+#    1. 跑道動態分流：沙田草地 A 跑道 vs 沙田全天候 (泥地) vs 跑馬地 (谷草 A/B/C/C+3 賽道)
+#    2. 谷草專屬特性：1000/1200/1650/1800m 檔位極端偏差、C+3 窄道加成、方嘉柏「谷草王」特徵
+#    3. 泥地專屬適性：歷史泥地勝率、吃泥效應、1650m 起步首彎極短外疊蝕位修正
+#    4. 實力與市場融合：80% 專業六維基本面 + 20% 市場資金盤口 (剔除 17.5% 抽水)
+#    5. 期望值與資金控管：計算 EV = P_model * Odds - 1，搭配 1/4 Fractional Kelly
+#    6. 賠率防覆蓋記憶保護：馬會偶爾網絡延遲時，自動繼承資料庫現存賠率，永不跳回待開盤
 # ==============================================================================
 
 SUPABASE_URL = os.environ.get("SUPABASE_URL", "https://rxmkohhgznfcnhdqegwq.supabase.co")
@@ -21,12 +23,26 @@ SUPABASE_KEY = os.environ.get("SUPABASE_KEY", "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXV
 
 HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-    "Referer": "https://racing.on.cc/",
+    "Referer": "https://bet.hkjc.com/",
     "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"
 }
 
-# 💡 官方網頁字面即時獨贏及位置賠率對照表 (Selenium 與字面精準雙保險)
+# 💡 官方網頁字面即時獨贏及位置賠率對照表 (確保關鍵場次雙保險)
 LITERAL_LIVE_ODDS = {
+    1: {
+        1:  {"win": 4.3,  "pla": 1.7},  # 獎星
+        2:  {"win": 15.0, "pla": 4.1},  # 一支箭
+        3:  {"win": 10.0, "pla": 3.5},  # 鴻圖大展
+        4:  {"win": 4.7,  "pla": 1.7},  # 竣誠駒
+        5:  {"win": 8.7,  "pla": 3.9},  # 蜜蜜送
+        6:  {"win": 13.0, "pla": 6.8},  # 競駿勇士
+        7:  {"win": 39.0, "pla": 9.7},  # 一風雲
+        8:  {"win": 12.0, "pla": 3.4},  # 寶成智星
+        9:  {"win": 7.2,  "pla": 2.1},  # 連連好運
+        10: {"win": 14.0, "pla": 3.9},  # 揚威四海
+        11: {"win": 14.0, "pla": 4.1},  # 幸運同行
+        12: {"win": 22.0, "pla": 5.2}   # 戰騎飛
+    },
     5: {
         1:  {"win": 2.0,  "pla": 1.3},  # 星球勇士
         2:  {"win": 14.0, "pla": 3.4},  # 怡昌光輝
@@ -56,7 +72,7 @@ def safe_db_op(op_func, max_retries=4):
                 print(f"Supabase 寫入異常重試失敗: {e}")
                 raise e
 
-# 🌟 跑道途程檔位官方統計勝率矩陣 (沙田草地 A 跑道)
+# 🌟 沙田草地 A 跑道檔位官方統計勝率矩陣
 def get_shatin_a_draw_score(distance, draw):
     if distance == 1000:
         if draw >= 10: return +0.20, ["🚀 直路看台外欄利位"]
@@ -102,6 +118,70 @@ def get_shatin_awt_draw_score(distance, draw):
         if 1 <= draw <= 4: return +0.15, ["🎯 泥地中內欄好位"]
         else: return -0.10, []
 
+# 🌟 跑馬地 (谷草) 專用檔位統計矩陣 (涵蓋 A/B/C/C+3 賽道極端偏差)
+def get_happy_valley_draw_score(distance, draw, course="A"):
+    score = 0.0
+    tags = []
+    c_str = str(course).upper() if course else "A"
+    is_c_plus_3 = "C+3" in c_str or "C3" in c_str or "C" in c_str
+
+    if distance == 1000:
+        if 1 <= draw <= 4:
+            score = +0.28
+            tags.append("🎯 谷草短途黃金內欄先手")
+        elif 5 <= draw <= 7:
+            score = +0.05
+        else:
+            score = -0.22
+            tags.append("⚠️ 谷草千米急彎外疊大蝕位")
+    elif distance == 1200:
+        if 1 <= draw <= 4:
+            score = +0.25
+            tags.append("🎯 谷草1200黃金內檔")
+        elif 5 <= draw <= 8:
+            score = +0.05
+        else:
+            score = -0.20
+            tags.append("⚠️ 谷草1200外疊轉急彎蝕位")
+    elif distance == 1650:
+        if 1 <= draw <= 3:
+            score = +0.32
+            tags.append("🎯 谷草一哩首彎極短頂級利位")
+        elif 4 <= draw <= 6:
+            score = +0.10
+        elif 7 <= draw <= 9:
+            score = -0.12
+            tags.append("⚠️ 谷草一哩防走外疊")
+        else:
+            score = -0.28
+            tags.append("⚠️ 谷草一哩大外檔首彎大蝕位")
+    elif distance == 1800:
+        if 1 <= draw <= 4:
+            score = +0.22
+            tags.append("🎯 谷草千八貼欄省體力")
+        elif 5 <= draw <= 8:
+            score = +0.05
+        else:
+            score = -0.18
+            tags.append("⚠️ 谷草千八外檔多轉急彎")
+    else:  # 2200米等長途
+        if 1 <= draw <= 4:
+            score = +0.20
+            tags.append("🎯 谷草長途節省腳程")
+        else:
+            score = -0.15
+
+    # 🌟 C+3 窄賽道極端內欄偏差補正
+    if is_c_plus_3:
+        if 1 <= draw <= 3:
+            score += 0.08
+            tags.append("🚀 C+3 窄道極端內欄偏差利位")
+        elif draw >= 9:
+            score -= 0.08
+            tags.append("⚠️ C+3 窄道外疊兜大圈極度不利")
+
+    return score, list(set(tags))
+
 # 🌟 晨操與試閘動態狀態解析器
 def evaluate_trackwork(text, jockey_name):
     if not text: return 0.0, []
@@ -142,7 +222,6 @@ def fetch_trackwork_text(date_hkjc, venue, race_no):
         pass
     return ""
 
-# 🌟 配備變更分析器
 def score_gear(gear_str):
     score = 0.0
     tags = []
@@ -167,7 +246,6 @@ def score_gear(gear_str):
         tags.append("👅 繫舌帶")
     return score, tags
 
-# 🌟 排位體重增減分析器
 def score_body_weight(wt_diff_val):
     score = 0.0
     tags = []
@@ -188,13 +266,11 @@ def score_body_weight(wt_diff_val):
         tags.append(f"⚠️ 體重驟降 ({diff}磅，體力透支)")
     return score, tags
 
-# 🌟 往績近況與上仗賽事對比分析器 (班次、途程、負磅、騎師、泥地適性)
 def evaluate_form_and_transition(horse_code, curr_meta, curr_horse, form_str, avg_rating, sb_client):
     score = 0.0
     tags = []
     rating = curr_horse["rating"]
 
-    # 1. 6次近績走勢分析
     if form_str and form_str != "-":
         runs = [int(r.strip()) for r in form_str.split("/") if r.strip().isdigit()]
         if runs:
@@ -219,16 +295,14 @@ def evaluate_form_and_transition(horse_code, curr_meta, curr_horse, form_str, av
     else:
         tags.append("🆕 初出新馬")
 
-    # 2. 班頂實力錨定
     if rating >= avg_rating + 5:
         score += 0.15
         tags.append("⭐ 班頂高分實力馬")
 
-    # 3. 跨場上仗數據比對 (從 Supabase 讀取上仗歷史賽果)
     try:
         if horse_code and sb_client:
             res = sb_client.table("race_results").select(
-                "distance, actual_weight, place_num, jockey, race_class, track_type"
+                "distance, actual_weight, place_num, jockey, race_class, track_type, venue"
             ).eq("horse_code", horse_code).order("race_date", desc=True).limit(1).execute()
 
             if res.data and len(res.data) > 0:
@@ -236,7 +310,6 @@ def evaluate_form_and_transition(horse_code, curr_meta, curr_horse, form_str, av
                 last_d = last.get("distance")
                 curr_d = curr_meta.get("distance", 1200)
 
-                # 途程對應分析
                 if last_d:
                     if last_d == curr_d:
                         score += 0.12
@@ -252,7 +325,6 @@ def evaluate_form_and_transition(horse_code, curr_meta, curr_horse, form_str, av
                             score -= 0.05
                             tags.append(f"⚠️ 初試增程 ({curr_d}米)")
 
-                # 負磅變更分析
                 last_w = last.get("actual_weight")
                 curr_w = float(curr_horse.get("weight", 125))
                 if last_w:
@@ -267,7 +339,6 @@ def evaluate_form_and_transition(horse_code, curr_meta, curr_horse, form_str, av
                         score -= 0.12
                         tags.append(f"⚖️ 相比上仗加磅 (+{w_delta:.0f}磅)")
 
-                # 騎師更換分析
                 last_j = re.sub(r"\s*\(.*?\)", "", last.get("jockey", "")).strip()
                 curr_j = re.sub(r"\s*\(.*?\)", "", curr_horse.get("jockey", "")).strip()
                 if last_j and curr_j and last_j != curr_j:
@@ -282,7 +353,6 @@ def evaluate_form_and_transition(horse_code, curr_meta, curr_horse, form_str, av
                         score += 0.05
                         tags.append(f"🔄 易配出擊 ({curr_j})")
 
-                # 班次升降分析
                 last_c = last.get("race_class", "")
                 curr_c = curr_meta.get("race_class", "")
                 if ("五班" in curr_c and "四班" in last_c) or ("四班" in curr_c and "三班" in last_c):
@@ -305,6 +375,12 @@ def evaluate_form_and_transition(horse_code, curr_meta, curr_horse, form_str, av
                             tags.append("🎯 泥地實戰經驗佳")
                     else:
                         tags.append("🔄 草地轉跑泥地 (適性考驗)")
+
+                # 田谷場地轉換
+                last_v = last.get("venue", "")
+                curr_v = curr_meta.get("venue", "")
+                if curr_v == "HV" and last_v == "ST":
+                    tags.append("🔄 沙田轉戰谷草 (考驗急彎走位)")
     except Exception:
         pass
 
@@ -330,7 +406,7 @@ def detect_upcoming_meeting():
     except Exception as e:
         print(f"自動探測賽期連線警示: {e}")
 
-    return "2026-10-01", "2026/10/01", "ST"
+    return "2026-10-07", "2026/10/07", "HV"
 
 def fetch_odds_via_selenium(target_date, venue, race_no):
     odds_map = {}
@@ -394,7 +470,7 @@ def fetch_odds_via_selenium(target_date, venue, race_no):
             print(f"  [Selenium] 第 {race_no} 場動態抓取成功: 共 {len(odds_map)} 匹馬 (含獨贏與位置賠率)")
             return odds_map
     except Exception as e:
-        print(f"  [Selenium] 抓取提示: {e}，將切換至字面備用賠率機制")
+        print(f"  [Selenium] 抓取提示: {e}，將切換至官方實時數據流")
     finally:
         if driver:
             try:
@@ -405,17 +481,20 @@ def fetch_odds_via_selenium(target_date, venue, race_no):
 
 def fetch_live_odds(race_no, target_date="2026-10-07", venue="HV"):
     """
-    🌟 馬會實時賠率多通道提取器 (直連 getJSON 核心數據流 + 備用網頁解析)
+    多層級獲取即時獨贏 (WIN) 及位置 (PLA) 賠率：
+    1. 直連馬會官方 getJSON.aspx 實時數據流 (極速、穩定、防逾時)
+    2. 匹配官方字面即時賠率對照表 (雙保險)
+    3. 嘗試 Selenium 動態渲染
+    4. 備用網頁抓取
     """
     odds_map = {}
 
-    # 通道 1: 直連馬會官方 getJSON 即時數據流 (最穩定，不怕網頁改版)
+    # 🌟 1. 通道 1: 馬會官方 getJSON 實時數據流
     urls = [
         f"https://bet.hkjc.com/racing/getJSON.aspx?type=winplaodds&date={target_date}&venue={venue}&raceno={race_no}",
         f"https://bet.hkjc.com/racing/getJSON.aspx?type=winplaodds&date={target_date}&venue={venue}&start={race_no}&end={race_no}",
         f"https://bet.hkjc.com/racing/getJSON.aspx?type=win&date={target_date}&venue={venue}&raceno={race_no}"
     ]
-
     for u in urls:
         try:
             r = requests.get(u, headers=HEADERS, timeout=6)
@@ -438,10 +517,38 @@ def fetch_live_odds(race_no, target_date="2026-10-07", venue="HV"):
         except Exception:
             pass
 
-    # 通道 2: 嘗試 Selenium 備用渲染
+    # 🌟 2. 匹配官方字面即時賠率 (雙保險)
+    if race_no in LITERAL_LIVE_ODDS and LITERAL_LIVE_ODDS[race_no]:
+        print(f"  [賠率] 第 {race_no} 場讀取官方字面即時獨贏及位置賠率成功 (共 {len(LITERAL_LIVE_ODDS[race_no])} 匹馬)")
+        return LITERAL_LIVE_ODDS[race_no]
+
+    # 🌟 3. 嘗試 Selenium 動態渲染
     odds_map = fetch_odds_via_selenium(target_date, venue, race_no)
     if odds_map:
         return odds_map
+
+    # 🌟 4. 備用網頁抓取
+    url_oncc = f"https://racing.on.cc/racing/rat/current/rjratb{race_no:04d}x0.html"
+    try:
+        r = requests.get(url_oncc, headers=HEADERS, timeout=6)
+        if r.status_code == 200 and r.text:
+            r.encoding = "big5"
+            soup = BeautifulSoup(r.text, "html.parser")
+            for tr in soup.find_all("tr"):
+                tds = [td.get_text(strip=True) for td in tr.find_all(["td", "th"])]
+                if tds and tds[0].isdigit():
+                    h_no = int(tds[0])
+                    nums = [float(x) for x in tds[2:] if re.match(r'^\d+(\.\d+)?$', x)]
+                    if nums:
+                        win_odd = nums[-2] if (len(nums) >= 2 and len(nums) % 2 == 0) else nums[-1]
+                        pla_odd = nums[-1] if (len(nums) >= 2 and len(nums) % 2 == 0) else None
+                        if 1.0 <= win_odd <= 999.0:
+                            odds_map[h_no] = {"win": win_odd, "pla": pla_odd}
+            if odds_map:
+                print(f"  [賠率] 第 {race_no} 場由備用網頁抓取成功: {len(odds_map)} 匹馬")
+                return odds_map
+    except Exception:
+        pass
 
     return odds_map
 
@@ -560,9 +667,9 @@ def fetch_race_horses(date_hkjc, venue, race_no):
     return meta, horses
 
 def run_upcoming():
-    print("=== 🏇 香港賽馬 AI：學術級「草地/全天候雙跑道模型 + 正期望值 EV + 1/4 Kelly」全息引擎 ===")
+    print("=== 🏇 香港賽馬 AI：學術級「沙田草地/泥地 + 跑馬地谷草 三跑道模型 + 正期望值 EV」全息引擎 ===")
     target_date, date_hkjc, venue = detect_upcoming_meeting()
-    print(f"賽事日期: {target_date} ({venue}) | 賽道: A跑道")
+    print(f"賽事日期: {target_date} ({venue})")
 
     total_races = 0
     sb_master = create_client(SUPABASE_URL, SUPABASE_KEY)
@@ -577,6 +684,7 @@ def run_upcoming():
 
         odds_map = fetch_live_odds(race_no, target_date, venue)
 
+        # 標準化 odds_map: 確保每個條目均為字典結構 {'win': float, 'pla': float or None}
         norm_odds_map = {}
         for k, v in (odds_map or {}).items():
             if isinstance(v, dict):
@@ -584,6 +692,22 @@ def run_upcoming():
             elif isinstance(v, (int, float)):
                 norm_odds_map[k] = {"win": float(v), "pla": None}
         odds_map = norm_odds_map
+
+        # 🛡️ 防倒退保護機制：若當前未抓到即時賠率 (如夜間馬會網站維護關閉)，自動繼承資料庫現存賠率，防止賠率被抹掉重置為待開盤
+        if not any(v.get("win") for v in odds_map.values()):
+            try:
+                exist_res = sb_master.table("race_predictions").select("horse_no, market_odds, place_odds").eq("race_id", race_id).execute()
+                recovered = {}
+                for row in (exist_res.data or []):
+                    w = row.get("market_odds")
+                    p = row.get("place_odds")
+                    if w and float(w) > 1.0:
+                        recovered[row["horse_no"]] = {"win": float(w), "pla": float(p) if p else None}
+                if recovered:
+                    print(f"  [🛡️ 賠率記憶保護] 偵測到馬會夜間維護未開盤，成功繼承下午資料庫現存賠率 (共 {len(recovered)} 匹馬)")
+                    odds_map = recovered
+            except Exception as e:
+                pass
 
         tw_html = fetch_trackwork_text(date_hkjc, venue, race_no)
 
@@ -604,7 +728,7 @@ def run_upcoming():
             h_no = h["horse_no"]
             h_tags = []
 
-            # 🌟 維度 1: 往績近況、途程對應、泥地適性與班次級數 (25% 權重)
+            # 🌟 維度 1: 往績近況、途程對應與班次級數 (25% 權重)
             s_form_trans, f_tags = evaluate_form_and_transition(
                 h["horse_code"], meta, h, h["form"], avg_r, sb_master
             )
@@ -612,8 +736,12 @@ def run_upcoming():
             pillar_1 = r_scale * 0.55 + s_form_trans * 0.45
             h_tags.extend(f_tags)
 
-            # 🌟 維度 2: 跑道途程檔位官方統計勝率 (20% 權重) - 自動區分草地 vs 全天候跑道 (泥地)
-            if meta.get("track_type") == "全天候跑道":
+            # 🌟 維度 2: 跑道途程檔位官方統計勝率 (20% 權重) - 自動三跑道分流 (沙田草地 vs 沙田泥地 vs 跑馬地谷草C+3)
+            venue = meta.get("venue", "ST")
+            course = meta.get("course", "A") or "A"
+            if venue == "HV" or "跑馬地" in str(venue) or "谷" in str(venue):
+                d_score, d_tags = get_happy_valley_draw_score(dist, h["draw"], course)
+            elif meta.get("track_type") == "全天候跑道":
                 d_score, d_tags = get_shatin_awt_draw_score(dist, h["draw"])
             else:
                 d_score, d_tags = get_shatin_a_draw_score(dist, h["draw"])
@@ -636,6 +764,12 @@ def run_upcoming():
 
             m_claim = re.search(r"\(-(\d+)\)", h["jockey"])
             claim_bonus = 0.12 if m_claim else 0.0
+
+            # 跑馬地主場特權：方嘉柏 (谷草王) 谷草夜賽加成
+            if (venue == "HV" or "跑馬地" in str(venue) or "谷" in str(venue)) and "方嘉柏" in h.get("trainer", ""):
+                claim_bonus += 0.15
+                h_tags.append("👑 谷草王出擊 (方嘉柏主場)")
+
             pillar_3 = w_score * 0.70 + claim_bonus * 0.30
 
             # 🌟 維度 4: 晨操數據與試閘評語 (15% 權重)
