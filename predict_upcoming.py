@@ -403,36 +403,45 @@ def fetch_odds_via_selenium(target_date, venue, race_no):
                 pass
     return odds_map
 
-def fetch_live_odds(race_no, target_date="2026-10-01", venue="ST"):
+def fetch_live_odds(race_no, target_date="2026-10-07", venue="HV"):
+    """
+    🌟 馬會實時賠率多通道提取器 (直連 getJSON 核心數據流 + 備用網頁解析)
+    """
+    odds_map = {}
+
+    # 通道 1: 直連馬會官方 getJSON 即時數據流 (最穩定，不怕網頁改版)
+    urls = [
+        f"https://bet.hkjc.com/racing/getJSON.aspx?type=winplaodds&date={target_date}&venue={venue}&raceno={race_no}",
+        f"https://bet.hkjc.com/racing/getJSON.aspx?type=winplaodds&date={target_date}&venue={venue}&start={race_no}&end={race_no}",
+        f"https://bet.hkjc.com/racing/getJSON.aspx?type=win&date={target_date}&venue={venue}&raceno={race_no}"
+    ]
+
+    for u in urls:
+        try:
+            r = requests.get(u, headers=HEADERS, timeout=6)
+            if r.status_code == 200 and r.text and "=" in r.text:
+                tokens = r.text.replace("&", ";").split(";")
+                for tok in tokens:
+                    if "=" in tok:
+                        parts = tok.split("=")
+                        if len(parts) == 2 and parts[0].strip().isdigit():
+                            h_no = int(parts[0].strip())
+                            vals = [float(x) for x in re.findall(r"\d+(?:\.\d+)?", parts[1])]
+                            if vals:
+                                win_val = vals[0]
+                                pla_val = vals[1] if len(vals) >= 2 else None
+                                if 1.0 <= win_val <= 999.0:
+                                    odds_map[h_no] = {"win": win_val, "pla": pla_val}
+                if odds_map:
+                    print(f"  [官方數據流] 第 {race_no} 場賠率獲取成功: 共 {len(odds_map)} 匹馬")
+                    return odds_map
+        except Exception:
+            pass
+
+    # 通道 2: 嘗試 Selenium 備用渲染
     odds_map = fetch_odds_via_selenium(target_date, venue, race_no)
     if odds_map:
         return odds_map
-
-    if race_no in LITERAL_LIVE_ODDS and LITERAL_LIVE_ODDS[race_no]:
-        print(f"  [賠率] 第 {race_no} 場讀取官方字面即時獨贏及位置賠率成功 (共 {len(LITERAL_LIVE_ODDS[race_no])} 匹馬)")
-        return LITERAL_LIVE_ODDS[race_no]
-
-    url_oncc = f"https://racing.on.cc/racing/rat/current/rjratb{race_no:04d}x0.html"
-    try:
-        r = requests.get(url_oncc, headers=HEADERS, timeout=6)
-        if r.status_code == 200 and r.text:
-            r.encoding = "big5"
-            soup = BeautifulSoup(r.text, "html.parser")
-            for tr in soup.find_all("tr"):
-                tds = [td.get_text(strip=True) for td in tr.find_all(["td", "th"])]
-                if tds and tds[0].isdigit():
-                    h_no = int(tds[0])
-                    nums = [float(x) for x in tds[2:] if re.match(r'^\d+(\.\d+)?$', x)]
-                    if nums:
-                        win_odd = nums[-2] if (len(nums) >= 2 and len(nums) % 2 == 0) else nums[-1]
-                        pla_odd = nums[-1] if (len(nums) >= 2 and len(nums) % 2 == 0) else None
-                        if 1.0 <= win_odd <= 999.0:
-                            odds_map[h_no] = {"win": win_odd, "pla": pla_odd}
-            if odds_map:
-                print(f"  [賠率] 第 {race_no} 場由備用網頁抓取成功: {len(odds_map)} 匹馬")
-                return odds_map
-    except Exception:
-        pass
 
     return odds_map
 
