@@ -27,39 +27,8 @@ HEADERS = {
     "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"
 }
 
-# 💡 官方網頁字面即時獨贏及位置賠率對照表 (確保關鍵場次雙保險)
-LITERAL_LIVE_ODDS = {
-    1: {
-        1:  {"win": 4.3,  "pla": 1.7},  # 獎星
-        2:  {"win": 15.0, "pla": 4.1},  # 一支箭
-        3:  {"win": 10.0, "pla": 3.5},  # 鴻圖大展
-        4:  {"win": 4.7,  "pla": 1.7},  # 竣誠駒
-        5:  {"win": 8.7,  "pla": 3.9},  # 蜜蜜送
-        6:  {"win": 13.0, "pla": 6.8},  # 競駿勇士
-        7:  {"win": 39.0, "pla": 9.7},  # 一風雲
-        8:  {"win": 12.0, "pla": 3.4},  # 寶成智星
-        9:  {"win": 7.2,  "pla": 2.1},  # 連連好運
-        10: {"win": 14.0, "pla": 3.9},  # 揚威四海
-        11: {"win": 14.0, "pla": 4.1},  # 幸運同行
-        12: {"win": 22.0, "pla": 5.2}   # 戰騎飛
-    },
-    5: {
-        1:  {"win": 2.0,  "pla": 1.3},  # 星球勇士
-        2:  {"win": 14.0, "pla": 3.4},  # 怡昌光輝
-        3:  {"win": 4.7,  "pla": 1.6},  # 嘉應耀昇
-        4:  {"win": 24.0, "pla": 4.6},  # 輕功猛男
-        5:  {"win": 59.0, "pla": 12.0}, # 星月峰雲
-        6:  {"win": 9.5,  "pla": 2.6},  # 盈俊天下
-        7:  {"win": 66.0, "pla": 12.0}, # 有意無意
-        8:  {"win": 28.0, "pla": 5.9},  # 數據派
-        9:  {"win": 79.0, "pla": 16.0}, # 精英奪冠
-        10: {"win": 24.0, "pla": 5.4},  # 經典多寶
-        11: {"win": 9.4,  "pla": 2.3},  # 升升雙息
-        12: {"win": 26.0, "pla": 5.2},  # 天寶威威
-        13: {"win": 52.0, "pla": 11.0}, # 豪邁先登
-        14: {"win": 70.0, "pla": 13.0}  # 勝萬家
-    }
-}
+# 💡 徹底清空歷史硬編碼，100% 依賴實時動態抓取，絕不污染當前賽事
+LITERAL_LIVE_ODDS = {}
 
 def safe_db_op(op_func, max_retries=4):
     for attempt in range(1, max_retries + 1):
@@ -481,11 +450,10 @@ def fetch_odds_via_selenium(target_date, venue, race_no):
 
 def fetch_live_odds(race_no, target_date="2026-10-07", venue="HV"):
     """
-    多層級獲取即時獨贏 (WIN) 及位置 (PLA) 賠率：
-    1. 直連馬會官方 getJSON.aspx 實時數據流 (極速、穩定、防逾時)
-    2. 匹配官方字面即時賠率對照表 (雙保險)
-    3. 嘗試 Selenium 動態渲染
-    4. 備用網頁抓取
+    多層級動態獲取即時獨贏 (WIN) 及位置 (PLA) 賠率：
+    1. 直連馬會官方 getJSON.aspx 實時數據流 (極速、無硬編碼)
+    2. 東網 (on.cc) 賽日即時賠率鏡像 (開跑當日 100% 同步馬會最新真實盤口)
+    3. Selenium 動態渲染
     """
     odds_map = {}
 
@@ -517,17 +485,7 @@ def fetch_live_odds(race_no, target_date="2026-10-07", venue="HV"):
         except Exception:
             pass
 
-    # 🌟 2. 匹配官方字面即時賠率 (雙保險)
-    if race_no in LITERAL_LIVE_ODDS and LITERAL_LIVE_ODDS[race_no]:
-        print(f"  [賠率] 第 {race_no} 場讀取官方字面即時獨贏及位置賠率成功 (共 {len(LITERAL_LIVE_ODDS[race_no])} 匹馬)")
-        return LITERAL_LIVE_ODDS[race_no]
-
-    # 🌟 3. 嘗試 Selenium 動態渲染
-    odds_map = fetch_odds_via_selenium(target_date, venue, race_no)
-    if odds_map:
-        return odds_map
-
-    # 🌟 4. 備用網頁抓取
+    # 🌟 2. 通道 2: 東網 (on.cc) 賽日即時鏡像 (開跑當日 100% 同步馬會最新真實盤口)
     url_oncc = f"https://racing.on.cc/racing/rat/current/rjratb{race_no:04d}x0.html"
     try:
         r = requests.get(url_oncc, headers=HEADERS, timeout=6)
@@ -538,17 +496,22 @@ def fetch_live_odds(race_no, target_date="2026-10-07", venue="HV"):
                 tds = [td.get_text(strip=True) for td in tr.find_all(["td", "th"])]
                 if tds and tds[0].isdigit():
                     h_no = int(tds[0])
-                    nums = [float(x) for x in tds[2:] if re.match(r'^\d+(\.\d+)?$', x)]
+                    nums = [float(x) for x in tds[2:] if re.match(r"^\d+(\.\d+)?$", x)]
                     if nums:
                         win_odd = nums[-2] if (len(nums) >= 2 and len(nums) % 2 == 0) else nums[-1]
                         pla_odd = nums[-1] if (len(nums) >= 2 and len(nums) % 2 == 0) else None
                         if 1.0 <= win_odd <= 999.0:
                             odds_map[h_no] = {"win": win_odd, "pla": pla_odd}
             if odds_map:
-                print(f"  [賠率] 第 {race_no} 場由備用網頁抓取成功: {len(odds_map)} 匹馬")
+                print(f"  [東網即時盤] 第 {race_no} 場抓取成功: 共 {len(odds_map)} 匹馬")
                 return odds_map
     except Exception:
         pass
+
+    # 🌟 3. 通道 3: 嘗試 Selenium 動態渲染
+    odds_map = fetch_odds_via_selenium(target_date, venue, race_no)
+    if odds_map:
+        return odds_map
 
     return odds_map
 
@@ -684,7 +647,6 @@ def run_upcoming():
 
         odds_map = fetch_live_odds(race_no, target_date, venue)
 
-        # 標準化 odds_map: 確保每個條目均為字典結構 {'win': float, 'pla': float or None}
         norm_odds_map = {}
         for k, v in (odds_map or {}).items():
             if isinstance(v, dict):
@@ -693,7 +655,7 @@ def run_upcoming():
                 norm_odds_map[k] = {"win": float(v), "pla": None}
         odds_map = norm_odds_map
 
-        # 🛡️ 防倒退保護機制：若當前未抓到即時賠率 (如夜間馬會網站維護關閉)，自動繼承資料庫現存賠率，防止賠率被抹掉重置為待開盤
+        # 🛡️ 防倒退保護機制：若當前未抓到即時賠率，自動繼承資料庫現存賠率，防止賠率被抹掉重置為待開盤
         if not any(v.get("win") for v in odds_map.values()):
             try:
                 exist_res = sb_master.table("race_predictions").select("horse_no, market_odds, place_odds").eq("race_id", race_id).execute()
@@ -704,7 +666,7 @@ def run_upcoming():
                     if w and float(w) > 1.0:
                         recovered[row["horse_no"]] = {"win": float(w), "pla": float(p) if p else None}
                 if recovered:
-                    print(f"  [🛡️ 賠率記憶保護] 偵測到馬會夜間維護未開盤，成功繼承下午資料庫現存賠率 (共 {len(recovered)} 匹馬)")
+                    print(f"  [🛡️ 賠率記憶保護] 成功繼承資料庫現存賠率 (共 {len(recovered)} 匹馬)")
                     odds_map = recovered
             except Exception as e:
                 pass
