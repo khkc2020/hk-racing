@@ -151,35 +151,71 @@ def get_happy_valley_draw_score(distance, draw, course="A"):
 
     return score, list(set(tags))
 
-# 🌟 晨操與試閘動態狀態解析器
+# 🌟 晨操與試閘動態狀態解析器 (高鑑別度升級版：剔除常規快跳同質化噪音，鎖定試閘走勢、評語與騎師親操)
 def evaluate_trackwork(text, jockey_name):
     if not text: return 0.0, []
     clean_j = re.sub(r"\s*\(.*?\)", "", jockey_name).strip()
     score = 0.0
     tags = []
 
-    trials = re.findall(r"第\d+組\d+\s+.*?[草地|全天候|泥地]\s*(\d+)/(\d+)\s*\((.*?)\)", text)
+    # 1. 試閘名次與騎師出試 (高鑑別度速度與狀態指標)
+    trials = re.findall(r"第\d+組\d*\s+.*?[草地|全天候|泥地]\s*(\d+)/(\d+)\s*\((.*?)\)", text)
     for rank_str, total_str, j_rider in trials:
         rank = int(rank_str)
         if rank == 1:
-            score += 0.20
-            tags.append("🔥 晨操試閘第1名")
-        elif rank <= 3:
-            score += 0.12
-            tags.append("⭐ 晨操試閘前三名")
-        if clean_j and clean_j in j_rider:
+            score += 0.25
+            tags.append("🔥 試閘第1名 (走勢著火)")
+        elif rank == 2:
+            score += 0.18
+            tags.append("⭐ 試閘第2名 (狀態大勇)")
+        elif rank == 3:
             score += 0.10
-            tags.append("🏇 騎師親自試閘")
+            tags.append("✨ 試閘前三名 (走勢順暢)")
+        elif rank >= 8:
+            score -= 0.10
+            tags.append("⚠️ 試閘脫節大敗")
 
-    gallops = re.findall(r"(\d{2}/\d{2}):\s*.*?(?:沙田|從化).*?(\d{2}\.\d)\s*\(.*?\)\s*\((.*?)\)", text)
-    if len(gallops) >= 3:
-        score += 0.15
-        tags.append("💪 賽前操足(3課+快跳)")
-    elif len(gallops) >= 1:
-        score += 0.08
-        tags.append("✨ 正常快跳備戰")
+        if clean_j and clean_j in j_rider:
+            score += 0.15
+            tags.append(f"🏇 騎師親自試閘 ({clean_j})")
+
+    # 2. 騎師親自快跳 (正選大師傅親自摸底出擊信號)
+    gallops = re.findall(r"(\d{2}/\d{2}):\s*.*?(?:沙田|從化).*?(\d{2}\.\d)\s*\((.*?)\)", text)
+    for dt, sec, rider in gallops:
+        if clean_j and clean_j in rider:
+            score += 0.12
+            tags.append(f"🏇 騎師親自快跳 ({clean_j})")
+            break
+
+    # 3. 拍跳激發鬥心 (雙跳對試/帶頭)
+    if "拍 " in text or "拍　" in text or ("拍" in text and any(x in text for x in ["全天候", "草地"])):
+        if re.search(r"拍\s*[\u4e00-\u9fa5]+", text):
+            score += 0.08
+            tags.append("⚔️ 拍跳對試 (激發鬥心)")
+
+    # 4. 晨操與試閘動態走勢評語關鍵字解析
+    pos_keywords = ["走勢輕鬆", "未見底", "自動湧上", "直路湧上", "扣實", "出腳爽朗", "步勁雄渾", "反應敏銳", "神態生猛", "火氣旺盛"]
+    neg_keywords = ["按韁無反應", "步頭笨重", "需要力策", "口勁過重", "轉彎外斜", "走勢生硬", "神色呆滯"]
+
+    for kw in pos_keywords:
+        if kw in text:
+            score += 0.15
+            tags.append(f"✨ 走勢評語: {kw}")
+            break
+
+    for kw in neg_keywords:
+        if kw in text:
+            score -= 0.15
+            tags.append(f"⚠️ 走勢評語: {kw}")
+            break
+
+    # 5. 反常備戰不足警告 (快跳少於2課且未試閘)
+    if len(gallops) < 2 and len(trials) == 0:
+        score -= 0.18
+        tags.append("⚠️ 賽前備戰偏弱 (快跳不足)")
 
     return score, list(set(tags))
+
 
 def fetch_trackwork_text(date_hkjc, venue, race_no):
     url = f"https://racing.hkjc.com/racing/information/Chinese/Racing/LocalTrackwork.aspx?RaceDate={date_hkjc}&Racecourse={venue}&RaceNo={race_no}"
