@@ -211,10 +211,10 @@
             {{ h.bet_strategy }}
           </span>
 
-          <!-- 騎練勝率 -->
-          <span v-if="h.combo_synergy" class="bg-blue-50 text-blue-700 text-xs px-2 py-0.5 rounded-md font-semibold">
-            🤝 騎練指數 {{ h.combo_synergy }}%
-          </span>
+          <!-- 期望值 EV (若為負數代表賠率過熱，只在具備正期望值時高亮顯示) -->
+<span v-if="h.combo_synergy && h.combo_synergy > 0" class="bg-emerald-50 text-emerald-800 text-xs px-2 py-0.5 rounded-md font-bold border border-emerald-200">
+  💎 正期望值 +{{ h.combo_synergy }}%
+</span>
 
           <!-- 官方配備與特徵彩色智慧標籤 -->
           <span 
