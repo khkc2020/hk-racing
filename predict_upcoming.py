@@ -870,12 +870,12 @@ def run_upcoming():
         # 🌟 實時市場資訊與隱含概率預先掃描 (Market Probability & Divergence Pre-scan)
         win_mkt_probs_map = {}
         pla_mkt_probs_map = {}
-        has_win_odds = any(h["horse_no"] in odds_map and (odds_map[h["horse_no"]].get("win") or 0) > 1.0 for h in horses)
+        has_win_odds = any(h["horse_no"] in odds_map and (odds_map.get(h["horse_no"], {}).get("win") or 0) > 1.0 for h in horses)
         if has_win_odds:
             win_implied = np.array([1.0 / max(float(odds_map.get(h["horse_no"], {}).get("win", 20.0) or 20.0), 1.01) for h in horses])
             win_mkt_probs = (win_implied / win_implied.sum()) * 100.0
 
-            has_pla_odds = any(h["horse_no"] in odds_map and (odds_map[h["horse_no"], {}].get("pla") or 0) > 1.0 for h in horses)
+            has_pla_odds = any(h["horse_no"] in odds_map and (odds_map.get(h["horse_no"], {}).get("pla") or 0) > 1.0 for h in horses)
             if has_pla_odds:
                 pla_implied = np.array([1.0 / max(float(odds_map.get(h["horse_no"], {}).get("pla", 5.0) or 5.0), 1.01) for h in horses])
                 pla_mkt_probs = (pla_implied / pla_implied.sum()) * 100.0
