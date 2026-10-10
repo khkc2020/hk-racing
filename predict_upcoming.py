@@ -9,15 +9,16 @@ from supabase import create_client
 from datetime import datetime, date
 
 # ==============================================================================
-# 🏇 香港賽馬 AI：學術級「沙田草地 / 沙田泥地 / 跑馬地谷草 三跑道模型 + 正期望值 EV」全息引擎
+# 🏇 香港賽馬 AI：學術級「沙田草地 / 泥地 / 谷草 三跑道模型 + 步速形勢 + 正期望值 EV」全息引擎
 # 🎯 整合香港賽馬專業基石：
 #    1. 跑道動態分流：沙田草地 A 跑道 vs 沙田全天候 (泥地) vs 跑馬地 (谷草 A/B/C/C+3 賽道)
 #    2. 谷草專屬特性：1000/1200/1650/1800m 檔位極端偏差、C+3 窄道加成、方嘉柏「谷草王」特徵
 #    3. 泥地專屬適性：歷史泥地勝率、吃泥效應、1650m 起步首彎極短外疊蝕位修正
-#    4. 實力與市場融合：80% 專業六維基本面 + 20% 市場資金盤口 (剔除 17.5% 抽水)
-#    5. 期望值與資金控管：計算 EV = P_model * Odds - 1，搭配 1/4 Fractional Kelly
-#    6. 賠率防覆蓋記憶保護：馬會偶爾網絡延遲時，自動繼承資料庫現存賠率，永不跳回待開盤
-#    7. 嚴格單馬賽前試閘解析：只取本仗賽前最近一課，上次賽事前舊試閘全部過濾，絕不重複發放標籤
+#    4. 全場步速與跑法引擎：自動推演單騎慢放 vs 快步速互搶，動態賦予步速戰術加成
+#    5. 分段尾速暗湧雷達：自動捕捉上仗末段狂追 5 馬位以上的掩蓋實力馬
+#    6. 實力與市場融合：80% 專業七維基本面 + 20% 市場資金盤口 (剔除 17.5% 抽水)
+#    7. 期望值與資金控管：計算 EV = P_model * Odds - 1，搭配 1/4 Fractional Kelly
+#    8. 嚴格賽前試閘：只取本仗賽前最近一課，上次賽事前的全部過濾，絕不重複發放標籤
 # ==============================================================================
 
 SUPABASE_URL = os.environ.get("SUPABASE_URL", "https://rxmkohhgznfcnhdqegwq.supabase.co")
@@ -328,6 +329,36 @@ def fetch_trackwork_text(date_hkjc, venue, race_no):
         pass
     return ""
 
+# 🌟 跑法與走位分析器 (Leader, Prominent, Midfield, Closer) 及末段爆發力偵測
+def evaluate_pace_and_style(h, past_record):
+    pos_str = past_record.get("running_position", "") if past_record else ""
+    style = "MIDFIELD"
+    late_burst = False
+    
+    if pos_str:
+        parts = [int(p) for p in pos_str.strip().split() if p.isdigit()]
+        if parts:
+            start_pos = parts[0]
+            final_pos = parts[-1]
+            if start_pos == 1:
+                style = "LEADER"
+            elif 2 <= start_pos <= 4:
+                style = "PROMINENT"
+            elif 5 <= start_pos <= 7:
+                style = "MIDFIELD"
+            else:
+                style = "CLOSER"
+                
+            if start_pos >= 8 and (start_pos - final_pos >= 5 or final_pos <= 5):
+                late_burst = True
+    else:
+        # 輔助推斷：內檔配眼罩/面箍，傾向前置
+        if h.get("draw", 7) <= 3 and any(g in h.get("gear", "") for g in ["B", "V", "PC"]):
+            style = "PROMINENT"
+            
+    return style, late_burst
+
+# 🌟 配備變更分析器
 def score_gear(gear_str):
     score = 0.0
     tags = []
@@ -409,7 +440,7 @@ def evaluate_form_and_transition(horse_code, curr_meta, curr_horse, form_str, av
     try:
         if horse_code and sb_client:
             res = sb_client.table("race_results").select(
-                "race_date, distance, actual_weight, place_num, jockey, race_class, track_type, venue"
+                "race_date, distance, actual_weight, place_num, jockey, race_class, track_type, venue, running_position"
             ).eq("horse_code", horse_code).order("race_date", desc=True).limit(1).execute()
 
             if res.data and len(res.data) > 0:
@@ -767,7 +798,7 @@ def fetch_race_horses(date_hkjc, venue, race_no):
     return meta, horses
 
 def run_upcoming():
-    print("=== 🏇 香港賽馬 AI：學術級「沙田草地/泥地 + 跑馬地谷草 三跑道模型 + 正期望值 EV」全息引擎 ===")
+    print("=== 🏇 香港賽馬 AI：學術級「沙田草地/泥地 + 跑馬地谷草 三跑道模型 + 步速形勢 + 正期望值 EV」全息引擎 ===")
     target_date, date_hkjc, venue = detect_upcoming_meeting()
     print(f"賽事日期: {target_date} ({venue})")
 
@@ -821,6 +852,33 @@ def run_upcoming():
         avg_r = sum(float(h["rating"]) for h in horses) / len(horses) if horses else 40.0
         avg_w = sum(float(h["weight"]) for h in horses) / len(horses) if horses else 122.0
         dist = meta["distance"]
+
+        # 🌟 全場步速與跑法形勢預先推演 (Race-level Pace Mapping)
+        horse_styles = {}
+        horse_late_bursts = {}
+        horse_past_cache = {}
+        for h in horses:
+            h_code = h["horse_code"]
+            h_no = h["horse_no"]
+            past = None
+            try:
+                if h_code and sb_master:
+                    r = sb_master.table("race_results").select(
+                        "race_date, distance, actual_weight, place_num, jockey, race_class, track_type, venue, running_position"
+                    ).eq("horse_code", h_code).order("race_date", desc=True).limit(1).execute()
+                    if r.data:
+                        past = r.data[0]
+            except Exception:
+                pass
+            horse_past_cache[h_no] = past
+            st, lb = evaluate_pace_and_style(h, past)
+            horse_styles[h_no] = st
+            horse_late_bursts[h_no] = lb
+
+        num_leaders = sum(1 for s in horse_styles.values() if s == "LEADER")
+        num_prominent = sum(1 for s in horse_styles.values() if s == "PROMINENT")
+        is_solo_lead = (num_leaders <= 1)
+        is_fast_pace = (num_leaders >= 3 or (num_leaders == 2 and num_prominent >= 4))
 
         scores = []
         tags_meta = {}
@@ -888,7 +946,44 @@ def run_upcoming():
             pillar_6 = wt_score
             h_tags.extend(wt_tags)
 
-            # 綜合六大專業維度
+            # 🌟 全場步速與跑法戰術加成
+            h_style = horse_styles.get(h_no, "MIDFIELD")
+            if is_solo_lead:
+                if h_style == "LEADER":
+                    pace_bonus = +0.18
+                    h_tags.append("⚡ 單騎領放 (步速形勢大好)")
+                elif h_style == "PROMINENT":
+                    pace_bonus = +0.08
+                    h_tags.append("🎯 步速偏慢跟前利位")
+                elif h_style == "CLOSER":
+                    pace_bonus = -0.10
+                    h_tags.append("⚠️ 慢步速戰略受制")
+                else:
+                    pace_bonus = 0.0
+            elif is_fast_pace:
+                if h_style == "LEADER":
+                    pace_bonus = -0.12
+                    h_tags.append("⚠️ 前段步速偏快 (慎防互搶力竭)")
+                elif h_style == "CLOSER":
+                    pace_bonus = +0.18
+                    h_tags.append("🦅 快步速得益 (有利後勁狂追)")
+                elif h_style == "PROMINENT":
+                    pace_bonus = -0.05
+                else:
+                    pace_bonus = 0.05
+            else:
+                pace_bonus = 0.0
+                if h_style == "LEADER":
+                    h_tags.append("⚡ 擅長前領放頭")
+                elif h_style == "CLOSER":
+                    h_tags.append("🦅 擅長後勁追趕")
+
+            # 🌟 上仗末段爆發力暗湧加成 (分段尾速狂追)
+            if horse_late_bursts.get(h_no):
+                pillar_1 += 0.15
+                h_tags.append("🚀 上仗末段狂追 (暗湧實力馬)")
+
+            # 綜合六大專業維度 + 步速戰術加成
             total_feature = (
                 (pillar_1 * 0.25) + 
                 (pillar_2 * 0.20) + 
@@ -896,7 +991,7 @@ def run_upcoming():
                 (pillar_4 * 0.15) + 
                 (pillar_5 * 0.10) + 
                 (pillar_6 * 0.10)
-            )
+            ) + pace_bonus
             scores.append(total_feature)
             tags_meta[h_no] = list(set(h_tags))
 
