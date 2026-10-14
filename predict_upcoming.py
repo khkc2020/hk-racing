@@ -1050,6 +1050,7 @@ def run_upcoming():
 
         # 🌟 學術核心 2：市場資訊校準 (剔除 17.5% 抽水率，場內歸一化)
         if has_win_odds:
+            # 80% 專業實力/步速/資金流綜合特徵 + 20% 市場資金定價權衡
             final_probs = 0.80 * raw_probs + 0.20 * mkt_composite_probs
         else:
             final_probs = raw_probs
@@ -1071,15 +1072,18 @@ def run_upcoming():
 
             # 🌟 學術核心 3 & 4：嚴格期望值 (EV) 計算與 1/4 Kelly 資金控管
             if win_odd and win_odd > 1.0:
+                # 數學期望值公式: EV = P_model * Odds - 1
                 ev = (p_model * win_odd) - 1.0
                 ev_pct = round(ev * 100.0, 1)
 
-                if ev >= 0.08: # 期望值超越 +8% 門檻
+                # 關注中等冷門 (5.0 - 25.0倍) 之正期望值機會；對於超過25倍極冷門要求基本實力門檻 (P >= 4%)
+                if ev >= 0.08: # 期望值超越 +8% 門檻 (足以覆蓋模型抽樣誤差與交易滑點)
                     if win_odd <= 25.0 or p_model >= 0.04:
                         is_val = True
                         b = win_odd - 1.0
+                        # 1/4 分數凱利公式 (Fractional Kelly)
                         kelly_1_4 = (ev / (4.0 * b)) * 100.0
-                        kelly_pct = round(min(5.0, max(0.5, kelly_1_4)), 1)
+                        kelly_pct = round(min(5.0, max(0.5, kelly_1_4)), 1) # 單注風險控制在 0.5% ~ 5.0% 本金
 
                         tags.append(f"💎 正期望值 EV: +{ev_pct}%")
                         tags.append(f"📊 建議注碼: 1/4 Kelly ({kelly_pct}%)")
@@ -1087,36 +1091,35 @@ def run_upcoming():
             if pla_odd:
                 tags.append(f"位置賠率: {pla_odd}倍")
 
-                  # 🛡️ 嚴格防溢位保護：NUMERIC(5, 2) 絕對值必須 < 10^3 (即最大 999.99)
-          safe_ev_pct = round(max(-99.0, min(999.0, ev_pct)), 1)
-          safe_win_odd = round(min(999.0, max(1.0, win_odd)), 1) if win_odd and win_odd > 1.0 else None
-          safe_win_prob = round(float(min(100.0, max(0.0, final_probs[i]))), 2)
+            # 🛡️ 嚴格防溢位保護：PostgreSQL NUMERIC(5, 2) 欄位絕對值必須嚴格 < 10^3 (即 -999.99 ~ 999.99)
+            safe_ev_pct = round(max(-99.0, min(999.0, ev_pct)), 1)
+            safe_win_odd = round(min(999.0, max(1.0, win_odd)), 1) if win_odd and win_odd > 1.0 else None
+            safe_win_prob = round(float(min(100.0, max(0.0, final_probs[i]))), 2)
 
-          scored.append({
-              "race_id": race_id,
-              "horse_no": h_no,
-              "horse_code": h["horse_code"],
-              "horse_name": h["horse_name"],
-              "draw": h["draw"],
-              "jockey": jockey_trainer_str,
-              "weight": h["weight"],
-              "win_probability": safe_win_prob,
-              "gear": h["gear"],
-              "rating": h["rating"],
-              "smart_tags": list(set(tags)),
-              "combo_synergy": safe_ev_pct, # 嚴防 numeric overflow
-              "market_odds": safe_win_odd,
-              "place_odds": pla_odd,
-              "is_value_bet": is_val
-          })
-
+            scored.append({
+                "race_id": race_id,
+                "horse_no": h_no,
+                "horse_code": h["horse_code"],
+                "horse_name": h["horse_name"],
+                "draw": h["draw"],
+                "jockey": jockey_trainer_str,
+                "weight": h["weight"],
+                "win_probability": safe_win_prob,
+                "gear": h["gear"],
+                "rating": h["rating"],
+                "smart_tags": list(set(tags)),
+                "combo_synergy": safe_ev_pct, # 嚴防 numeric field overflow
+                "market_odds": safe_win_odd,
+                "place_odds": pla_odd,
+                "is_value_bet": is_val
+            })
 
         scored.sort(key=lambda x: x["win_probability"], reverse=True)
         final_payload = []
         for rank, item in enumerate(scored, 1):
             h_tags_list = item["smart_tags"]
             has_smart_money = any("聰明錢落飛" in str(t) or "大戶位置鎖定" in str(t) for t in h_tags_list)
-            is_high_ev = (item["combo_synergy"] >= 8.0)
+            is_high_ev = (item["combo_synergy"] >= 8.0) # EV >= +8%
 
             # 🌟 資金流模組 3: 三方共振 (技術面前4 + 正期望值 + 聰明錢確認)
             if rank <= 4 and is_high_ev and has_smart_money:
@@ -1154,19 +1157,19 @@ def run_upcoming():
                 "place_odds": item["place_odds"]
             })
 
-              def _write_preds():
-          c = create_client(SUPABASE_URL, SUPABASE_KEY)
-          c.table("race_predictions").delete().eq("race_id", race_id).execute()
-          clean_payload = [{k: v for k, v in row.items() if k != "place_odds"} for row in final_payload]
-          c.table("race_predictions").insert(clean_payload).execute()
-
+        def _write_preds():
+            c = create_client(SUPABASE_URL, SUPABASE_KEY)
+            c.table("race_predictions").delete().eq("race_id", race_id).execute()
+            # 🛡️ 確保不傳入 Supabase 表尚未新增的 place_odds 欄位，並確保所有數值在 NUMERIC(5,2) 範圍內
+            clean_payload = [{k: v for k, v in row.items() if k != "place_odds"} for row in final_payload]
+            c.table("race_predictions").insert(clean_payload).execute()
         safe_db_op(_write_preds)
 
         top_h = scored[0]
         odds_count = sum(1 for p in final_payload if p.get("market_odds") is not None)
         print(f"  ✓ 第 {race_no} 場完成 ({meta['distance']}米, 出賽: {len(horses)} 匹, 賠率涵蓋: {odds_count}匹, 首選: {top_h['horse_no']}號 {top_h['horse_name']} [{top_h['draw']}檔/{top_h['weight']}磅], 勝率:{top_h['win_probability']}%, 獨贏:{top_h['market_odds']}, 位置:{top_h['place_odds']})")
 
-    print(f"\n🎉 成功！已完成專業評馬人全息綜合預測並全部寫入 Supabase！")
+    print(f"\n🎉 成功！已完成專業評馬人六維綜合預測並全部寫入 Supabase！")
 
 if __name__ == "__main__":
     run_upcoming()
