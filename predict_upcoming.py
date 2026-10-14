@@ -1087,23 +1087,29 @@ def run_upcoming():
             if pla_odd:
                 tags.append(f"位置賠率: {pla_odd}倍")
 
-            scored.append({
-                "race_id": race_id,
-                "horse_no": h_no,
-                "horse_code": h["horse_code"],
-                "horse_name": h["horse_name"],
-                "draw": h["draw"],
-                "jockey": jockey_trainer_str,
-                "weight": h["weight"],
-                "win_probability": round(float(final_probs[i]), 2),
-                "gear": h["gear"],
-                "rating": h["rating"],
-                "smart_tags": list(set(tags)),
-                "combo_synergy": ev_pct,
-                "market_odds": win_odd,
-                "place_odds": pla_odd,
-                "is_value_bet": is_val
-            })
+                  # 🛡️ 嚴格防溢位保護：NUMERIC(5, 2) 絕對值必須 < 10^3 (即最大 999.99)
+          safe_ev_pct = round(max(-99.0, min(999.0, ev_pct)), 1)
+          safe_win_odd = round(min(999.0, max(1.0, win_odd)), 1) if win_odd and win_odd > 1.0 else None
+          safe_win_prob = round(float(min(100.0, max(0.0, final_probs[i]))), 2)
+
+          scored.append({
+              "race_id": race_id,
+              "horse_no": h_no,
+              "horse_code": h["horse_code"],
+              "horse_name": h["horse_name"],
+              "draw": h["draw"],
+              "jockey": jockey_trainer_str,
+              "weight": h["weight"],
+              "win_probability": safe_win_prob,
+              "gear": h["gear"],
+              "rating": h["rating"],
+              "smart_tags": list(set(tags)),
+              "combo_synergy": safe_ev_pct, # 嚴防 numeric overflow
+              "market_odds": safe_win_odd,
+              "place_odds": pla_odd,
+              "is_value_bet": is_val
+          })
+
 
         scored.sort(key=lambda x: x["win_probability"], reverse=True)
         final_payload = []
@@ -1148,17 +1154,12 @@ def run_upcoming():
                 "place_odds": item["place_odds"]
             })
 
-        def _write_preds():
-            c = create_client(SUPABASE_URL, SUPABASE_KEY)
-            c.table("race_predictions").delete().eq("race_id", race_id).execute()
-            try:
-                c.table("race_predictions").insert(final_payload).execute()
-            except Exception as e:
-                if "place_odds" in str(e).lower():
-                    clean_payload = [{k: v for k, v in row.items() if k != "place_odds"} for row in final_payload]
-                    c.table("race_predictions").insert(clean_payload).execute()
-                else:
-                    raise e
+              def _write_preds():
+          c = create_client(SUPABASE_URL, SUPABASE_KEY)
+          c.table("race_predictions").delete().eq("race_id", race_id).execute()
+          clean_payload = [{k: v for k, v in row.items() if k != "place_odds"} for row in final_payload]
+          c.table("race_predictions").insert(clean_payload).execute()
+
         safe_db_op(_write_preds)
 
         top_h = scored[0]
