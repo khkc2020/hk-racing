@@ -1,0 +1,38 @@
+name: ⚡ 賽馬 AI 臨場秒級賠率與聰明錢同步 (15秒)
+
+on:
+  workflow_dispatch:
+
+  # 賽馬日時段每 15 分鐘自動刷新一次
+  schedule:
+    # 週三跑馬地夜賽時段 (HKT 18:30 ~ 22:45 -> UTC 10:30 ~ 14:45)
+    - cron: "30,45 10 * * 3"
+    - cron: "*/15 11,12,13,14 * * 3"
+    # 週日沙田日賽時段 (HKT 12:30 ~ 17:45 -> UTC 04:30 ~ 09:45)
+    - cron: "30,45 4 * * 0,6"
+    - cron: "*/15 5,6,7,8,9 * * 0,6"
+
+jobs:
+  fast-sync:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: 檢出代碼庫
+        uses: actions/checkout@v4
+
+      - name: 配置 Python 環境
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      - name: 安裝輕量套件
+        run: |
+          pip install --default-timeout=60 requests beautifulsoup4 numpy supabase selenium webdriver-manager
+
+      - name: 執行 15 秒極速賠率與聰明錢同步
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+        run: |
+          python sync_odds_live.py
