@@ -30,11 +30,20 @@
       </div>
       <div class="flex items-center gap-2">
         <button 
+          @click="triggerRacecardUpdate" 
+          :disabled="syncingCard" 
+          class="bg-indigo-600 hover:bg-indigo-700 text-white px-2.5 py-1.5 rounded-xl text-xs font-bold shadow-sm transition disabled:opacity-50 flex items-center gap-1 active:scale-95"
+          title="重新抓取馬會最新排位表、排位體重、退出馬與晨操試閘"
+        >
+          <span>{{ syncingCard ? '⏳ 更新排位中...' : '📋 更新排位表' }}</span>
+        </button>
+        <button 
           @click="triggerLiveOddsSync" 
           :disabled="syncingOdds" 
-          class="bg-amber-500 hover:bg-amber-600 text-white px-3 py-1.5 rounded-xl text-xs font-black shadow-sm transition disabled:opacity-50 flex items-center gap-1 active:scale-95"
+          class="bg-amber-500 hover:bg-amber-600 text-white px-2.5 py-1.5 rounded-xl text-xs font-black shadow-sm transition disabled:opacity-50 flex items-center gap-1 active:scale-95"
+          title="賽前一日12:00開盤後，15秒極速同步最新賠率與聰明錢"
         >
-          <span>{{ syncingOdds ? '⏳ 秒刷中...' : '⚡ 臨場秒刷賠率' }}</span>
+          <span>{{ syncingOdds ? '⏳ 秒刷中...' : '⚡ 秒刷賠率' }}</span>
         </button>
         <button 
           @click="showSettings = true" 
@@ -137,8 +146,14 @@
             {{ currentRace.venue === 'ST' ? '沙田' : '跑馬地' }} • {{ currentRace.race_class }}
           </span>
         </div>
-        <div class="text-xs text-slate-500 font-medium">
-          {{ currentRace.track_type }} • {{ currentRace.distance }}米 • {{ currentRace.course ? currentRace.course + '賽道' : '' }}
+        <div class="text-xs text-slate-500 font-medium flex flex-wrap items-center gap-2">
+          <span>{{ currentRace.track_type }} • {{ currentRace.distance }}米 • {{ currentRace.course ? currentRace.course + '賽道' : '' }}</span>
+          <span v-if="isCurrentPoolOpen" class="bg-emerald-50 text-emerald-700 border border-emerald-200 px-2 py-0.5 rounded-full font-bold">
+            🟢 彩池已開盤 (實時聰明錢監測中)
+          </span>
+          <span v-else class="bg-slate-100 text-slate-600 border border-slate-300 px-2 py-0.5 rounded-full font-bold">
+            ⏳ 未開盤 (賽前一日正午12:00開售 • 目前僅顯示純排位實力)
+          </span>
         </div>
       </div>
     </div>
@@ -184,14 +199,14 @@
                 <span v-if="h.trainer" class="text-slate-700 font-semibold">🎪 {{ h.trainer }}</span>
                 <span>•</span>
                 <span>評分: <strong class="text-slate-700">{{ h.rating || '-' }}</strong></span>
-                <span v-if="h.market_odds" class="text-amber-700 font-bold bg-amber-50 px-1.5 py-0.5 rounded border border-amber-200">
+                <span v-if="isCurrentPoolOpen && h.market_odds" class="text-amber-700 font-bold bg-amber-50 px-1.5 py-0.5 rounded border border-amber-200">
                   獨贏: {{ h.market_odds }}倍
                 </span>
-                <span v-if="h.place_odds || extractPlace(h)" class="text-sky-700 font-bold bg-sky-50 px-1.5 py-0.5 rounded border border-sky-200">
+                <span v-if="isCurrentPoolOpen && (h.place_odds || extractPlace(h))" class="text-sky-700 font-bold bg-sky-50 px-1.5 py-0.5 rounded border border-sky-200">
                   位置: {{ h.place_odds || extractPlace(h) }}倍
                 </span>
-                <span v-if="!h.market_odds && !h.place_odds && !extractPlace(h)" class="text-slate-400 bg-slate-100 px-1.5 py-0.5 rounded text-[11px]">
-                  賠率: 待開盤
+                <span v-if="!isCurrentPoolOpen || (!h.market_odds && !h.place_odds && !extractPlace(h))" class="text-slate-500 bg-slate-100 px-1.5 py-0.5 rounded text-[11px] font-semibold">
+                  {{ isCurrentPoolOpen ? '賠率: 待開盤' : '賠率: 賽前一日12:00開盤' }}
                 </span>
                 <span v-if="h.weight">•</span>
                 <span v-if="h.weight">負磅: <strong class="text-slate-700">{{ h.weight }}磅</strong></span>
@@ -219,20 +234,20 @@
         <!-- 底行：智慧標籤與策略徽章 -->
         <div class="mt-2.5 flex flex-wrap items-center gap-1.5 pt-2 border-t border-slate-100">
           <!-- 下注策略 -->
-          <span v-if="h.bet_strategy" class="bg-amber-100 text-amber-900 text-xs px-2 py-0.5 rounded-md font-bold">
-            {{ h.bet_strategy }}
+          <span v-if="cleanStrategy(h)" class="bg-amber-100 text-amber-900 text-xs px-2 py-0.5 rounded-md font-bold">
+            {{ cleanStrategy(h) }}
           </span>
 
-          <!-- 期望值 EV (若為負數代表賠率過熱，只在具備正期望值時高亮顯示) -->
-<span v-if="h.combo_synergy && h.combo_synergy > 0" class="bg-emerald-50 text-emerald-800 text-xs px-2 py-0.5 rounded-md font-bold border border-emerald-200">
-  💎 正期望值 +{{ h.combo_synergy }}%
-</span>
+          <!-- 期望值 EV (僅在已開盤且具備正期望值時顯示) -->
+          <span v-if="isCurrentPoolOpen && h.combo_synergy && h.combo_synergy > 0" class="bg-emerald-50 text-emerald-800 text-xs px-2 py-0.5 rounded-md font-bold border border-emerald-200">
+            💎 正期望值 +{{ h.combo_synergy }}%
+          </span>
 
-          <!-- 官方配備與特徵彩色智慧標籤 -->
+          <!-- 官方配備與特徵彩色智慧標籤 (未開盤時自動過濾假聰明錢/舊賠率標籤) -->
           <span 
-            v-for="(tag, idx) in h.smart_tags" 
+            v-for="(tag, idx) in filterValidTags(h.smart_tags)" 
             :key="idx"
-            :class="getTagClass, githubToken, githubRepo, syncingOdds, triggerLiveOddsSync(tag)"
+            :class="getTagClass(tag)"
             class="text-xs px-2 py-0.5 rounded-md"
           >
             {{ tag }}
@@ -293,14 +308,16 @@
     createApp({
       setup() {
         const DEFAULT_URL = "https://rxmkohhgznfcnhdqegwq.supabase.co";
+        const DEFAULT_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InJ4bWtvaGhnem5mY25oZHFlZ3dxIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NTgyMzY5ODUsImV4cCI6MjA3MzgxMjk4NX0.U90iM3D5Q0Gcx5eO1qS5mE_B9W1lH4d-616sR-a1Fw8";
         const supabaseUrl = ref(localStorage.getItem('sb_url') || DEFAULT_URL);
-        const supabaseKey = ref(localStorage.getItem('sb_key') || '');
+        const supabaseKey = ref(localStorage.getItem('sb_key') || DEFAULT_KEY);
         const showSettings = ref(false);
         const loading = ref(false);
         const noticeMsg = ref('');
         const githubToken = ref(localStorage.getItem('gh_token') || '');
         const githubRepo = ref(localStorage.getItem('gh_repo') || 'khkc2020/hk-racing');
         const syncingOdds = ref(false);
+        const syncingCard = ref(false);
 
         const races = ref([]);
         const selectedDate = ref('');
@@ -343,10 +360,81 @@
         });
 
         
-        const triggerLiveOddsSync = async () => {
+        // 判斷所選賽日是否已到馬會開盤時間 (賽前一日 11:30 AM HKT 後)
+        const isCurrentPoolOpen = computed(() => {
+          if (!selectedDate.value || selectedDate.value.startsWith('demo')) return false;
+          try {
+            const parts = selectedDate.value.split('-');
+            if (parts.length !== 3) return true;
+            // 建立賽前一日 11:30 HKT (UTC+8 => UTC 03:30)
+            const raceUtc = Date.UTC(parseInt(parts[0]), parseInt(parts[1]) - 1, parseInt(parts[2]), 3, 30, 0);
+            const openTimeMs = raceUtc - (24 * 60 * 60 * 1000);
+            return Date.now() >= openTimeMs;
+          } catch (e) {
+            return true;
+          }
+        });
+
+        const filterValidTags = (tags) => {
+          if (!tags || !Array.isArray(tags)) return [];
+          if (isCurrentPoolOpen.value) return tags;
+          // 未開盤時，嚴格過濾任何舊盤殘留的賠率、聰明錢、大戶位置、EV 標籤
+          const oddsKeywords = ['聰明錢', '大戶位置', '正期望值', '建議注碼', '位置賠率', '終極黃金狙擊', '回飛'];
+          return tags.filter(t => !oddsKeywords.some(kw => String(t).includes(kw)));
+        };
+
+        const cleanStrategy = (h) => {
+          const s = h.bet_strategy || '';
+          if (!isCurrentPoolOpen.value && (s.includes('終極黃金狙擊') || s.includes('價值突擊'))) {
+            if (h.predicted_rank === 1) return '🎯 獨贏首選 / 實力馬膽';
+            if (h.predicted_rank === 2) return '⚡ 次選主力 / 黃金走位';
+            if (h.predicted_rank <= 4) return '🛡️ 連贏配腳 / 實力冷門';
+            return '';
+          }
+          return s;
+        };
+
+        const triggerRacecardUpdate = async () => {
           if (!githubToken.value || !githubRepo.value) {
-            noticeMsg.value = '💡 提示：請在右上角「⚙️ 設定」中輸入 GitHub Token 與倉庫名即可啟用網頁一鍵秒刷！(目前可去 GitHub Actions 點擊「⚡ 臨場秒級賠率同步」執行)';
-            showSettings.value = true;
+            noticeMsg.value = '💡 請先點擊右上角「⚙️ 設定」填入 GitHub Token，即可在網頁一鍵更新最新排位表與晨操！';
+            return;
+          }
+          syncingCard.value = true;
+          noticeMsg.value = '📋 正在通知雲端重新抓取馬會最新排位表、排位體重、退出馬與晨操 (約需 45 秒)...';
+          try {
+            const resp = await fetch(`https://api.github.com/repos/${githubRepo.value.trim()}/actions/workflows/predict_cron.yml/dispatches`, {
+              method: 'POST',
+              headers: {
+                'Authorization': `Bearer ${githubToken.value.trim()}`,
+                'Accept': 'application/vnd.github.v3+json',
+                'Content-Type': 'application/json'
+              },
+              body: JSON.stringify({ ref: 'main' })
+            });
+            if (!resp.ok) throw new Error('請確認 GitHub Token 已勾選 workflow 權限');
+            let attempts = 0;
+            const poll = setInterval(async () => {
+              attempts++;
+              await loadRaces();
+              if (attempts >= 12) {
+                clearInterval(poll);
+                syncingCard.value = false;
+                noticeMsg.value = '✅ 最新排位表與晨操數據已更新完畢！';
+              }
+            }, 4000);
+          } catch (e) {
+            syncingCard.value = false;
+            noticeMsg.value = '排位更新啟動失敗: ' + e.message;
+          }
+        };
+
+        const triggerLiveOddsSync = async () => {
+          if (!isCurrentPoolOpen.value) {
+            noticeMsg.value = `⏳ 該賽日 (${selectedDate.value}) 尚未開盤！馬會將於賽事前一日正午 12:00 開售彩池，屆時方可刷取即時賠率與聰明錢。`;
+            return;
+          }
+          if (!githubToken.value || !githubRepo.value) {
+            noticeMsg.value = '💡 請先點擊右上角「⚙️ 設定」填入 GitHub Token，即可啟用網頁 15 秒一鍵秒刷賠率！';
             return;
           }
           syncingOdds.value = true;
@@ -481,12 +569,12 @@
             {
               horse_no: 6, horse_name: '當弗主力', horse_code: 'J037', draw: 2, jockey: '潘頓', rating: 33, weight: 126, gear: 'PC1',
               win_probability: 24.8, predicted_rank: 1, bet_strategy: '🎯 獨贏首選 / 連贏馬膽', combo_synergy: 40.0,
-              smart_tags: ['👑 終極黃金狙擊 (基本面+EV+聰明錢共振)', '🔥 聰明錢落飛 (-24%)', '🎯 谷草1200黃金內檔', '⚡ 單騎領放 (步速形勢大好)']
+              smart_tags: ['🎯 短途黃金內欄', '⚡ 單騎領放 (步速形勢大好)', '🔥 賽前試閘第1名']
             },
             {
               horse_no: 12, horse_name: '輕磅伏兵', horse_code: 'K209', draw: 1, jockey: '何澤堯', rating: 28, weight: 116, gear: 'TT',
               win_probability: 19.5, predicted_rank: 2, bet_strategy: '⚡ 次選主力', combo_synergy: 35.2,
-              smart_tags: ['🎯 大戶位置鎖定 (假冷真熱)', '🪶 輕磅飛馳', '👅 繫舌帶', '⭐ 賽前試閘第2名']
+              smart_tags: ['🪶 輕磅飛馳', '👅 繫舌帶', '⭐ 賽前試閘第2名']
             },
             {
               horse_no: 3, horse_name: '日日獎', horse_code: 'H283', draw: 4, jockey: '霍宏聲', rating: 39, weight: 132, gear: 'B2T',
@@ -568,7 +656,7 @@
           supabaseUrl, supabaseKey, showSettings, loading, noticeMsg,
           dates, selectedDate, currentDayRaces, currentRace, selectedRaceId,
           predictions, saveSettings, loadRaces, selectDate, selectRace, loadDemoData, extractPlace, bestValuePicks,
-          getTagClass, githubToken, githubRepo, syncingOdds, triggerLiveOddsSync
+          getTagClass, githubToken, githubRepo, syncingOdds, syncingCard, isCurrentPoolOpen, filterValidTags, cleanStrategy, triggerRacecardUpdate, triggerLiveOddsSync
         };
       }
     }).mount('#app');

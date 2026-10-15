@@ -663,8 +663,32 @@ def fetch_odds_via_selenium(target_date, venue, race_no):
         pass
     return odds_map
 
+
+def is_odds_pool_open(target_date_str):
+    """
+    香港賽馬會彩池開盤守門員：
+    馬會固定於「賽事前一日中午 12:00 (HKT)」正式開售彩池並提供賠率。
+    若當前香港時間早於賽前一日 11:30 AM，代表尚未開盤，嚴禁抓取東網舊盤或啟動 Chrome！
+    """
+    try:
+        from datetime import datetime, timedelta, timezone
+        hkt = timezone(timedelta(hours=8))
+        now_hkt = datetime.now(hkt)
+        race_dt = datetime.strptime(target_date_str, "%Y-%m-%d").date()
+        # 開盤時間：賽事前一日 11:30 HKT
+        open_dt = datetime(race_dt.year, race_dt.month, race_dt.day, 11, 30, tzinfo=hkt) - timedelta(days=1)
+        # 若賽事已經過期超過 1 天，也無需再抓即時賠率
+        close_dt = datetime(race_dt.year, race_dt.month, race_dt.day, 23, 55, tzinfo=hkt)
+        return open_dt <= now_hkt <= close_dt
+    except Exception:
+        return True
+
 def fetch_live_odds(race_no, target_date="2026-10-07", venue="HV"):
     odds_map = {}
+    if not is_odds_pool_open(target_date):
+        if race_no == 1:
+            print(f"  [⏸️ 彩池未開盤] 賽事 ({target_date}) 將於賽前一日正午 12:00 開盤，跳過賠率抓取與 Chrome 啟動。")
+        return {}
 
     # 🌟 1. 通道 1: 馬會官方 getJSON 實時數據流
     urls = [
@@ -694,13 +718,29 @@ def fetch_live_odds(race_no, target_date="2026-10-07", venue="HV"):
         except Exception:
             pass
 
-    # 🌟 2. 通道 2: 東網 (on.cc) 賽日即時鏡像
+    # 🌟 2. 通道 2: 東網 (on.cc) 賽日即時鏡像 (嚴格核對賽日日期，絕不誤用上期舊賠率)
     url_oncc = f"https://racing.on.cc/racing/rat/current/rjratb{race_no:04d}x0.html"
     try:
         r = requests.get(url_oncc, headers=HEADERS, timeout=6)
         if r.status_code == 200 and r.text:
             r.encoding = "big5"
             soup = BeautifulSoup(r.text, "html.parser")
+            page_txt = soup.get_text()
+            # 驗證東網頁面日期是否與 target_date (YYYY-MM-DD) 吻合
+            parts_d = target_date.split("-")
+            if len(parts_d) == 3:
+                y_s, m_s, d_s = parts_d[0], str(int(parts_d[1])), str(int(parts_d[2]))
+                d_pad, m_pad = parts_d[2], parts_d[1]
+                valid_date_OnPage = any(pat in page_txt for pat in [
+                    f"{d_pad}/{m_pad}/{y_s}", f"{d_s}/{m_s}/{y_s}",
+                    f"{y_s}年{m_s}月{d_s}日", f"{y_s}-{m_pad}-{d_pad}"
+                ])
+            else:
+                valid_date_OnPage = True
+            if not valid_date_OnPage:
+                if race_no == 1:
+                    print(f"  [⚠️ 東網防污染] 東網頁面仍停留在舊賽日，與目標賽日 {target_date} 不符，已自動攔截舊賠率！")
+                soup = BeautifulSoup("", "html.parser")
             for tr in soup.find_all("tr"):
                 tds = [td.get_text(strip=True) for td in tr.find_all(["td", "th"])]
                 if tds and tds[0].isdigit():
@@ -791,6 +831,9 @@ def fetch_race_horses(date_hkjc, venue, race_no):
             if not val_no.isdigit(): continue
             h_no = int(val_no)
 
+            row_full_txt = " ".join(tds)
+            if "退出" in row_full_txt or "Withdrawn" in row_full_txt or "SCR" in row_full_txt:
+                continue
             raw_name = tds[h_idx["horse_name"]]
             clean_name = re.sub(r"\s*\(.*?\)", "", raw_name).strip()
             h_code = ""
@@ -888,9 +931,14 @@ def run_upcoming():
         except Exception as e:
             pass
 
-        # 🛡️ 防倒退保護機制：若當前未抓到即時賠率 (如夜間馬會網站維護關閉)，自動繼承資料庫現存賠率，防止賠率被抹掉重置為待開盤
-        if not any(v.get("win") for v in odds_map.values()) and prev_odds_map:
-            print(f"  [🛡️ 賠率記憶保護] 偵測到馬會夜間維護未開盤，成功繼承資料庫現存賠率 (共 {len(prev_odds_map)} 匹馬)")
+        # 🛡️ 防倒退保護機制：僅在「已開盤但馬會夜間臨時維護」時繼承賠率；若賽事根本尚未開盤，強制保持空賠率以清除誤抓舊數據
+        pool_open = is_odds_pool_open(target_date)
+        if not pool_open:
+            odds_map = {}
+            prev_odds_map = {}
+            prev_tags_map = {}
+        elif not any(v.get("win") for v in odds_map.values()) and prev_odds_map:
+            print(f"  [🛡️ 賠率記憶保護] 偵測到馬會夜間維護，成功繼承資料庫現存賠率 (共 {len(prev_odds_map)} 匹馬)")
             odds_map = prev_odds_map
 
         tw_html = fetch_trackwork_text(date_hkjc, venue, race_no)
