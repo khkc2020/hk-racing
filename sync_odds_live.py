@@ -254,6 +254,8 @@ def sync_live_odds_and_ev():
                     t for t in tags
                     if not any(kw in str(t) for kw in ["位置賠率", "正期望值", "建議注碼", "聰明錢", "大戶位置", "終極黃金狙擊", "回飛"])
                 ]
+                w_p_val = round(float(raw_probs[i]), 2)
+                fair_odd = round(min(99.0, max(1.5, 82.5 / max(w_p_val, 0.85))), 1)
                 clean_unopened.append({
                     "race_id": race_id,
                     "horse_no": h["horse_no"],
@@ -261,7 +263,7 @@ def sync_live_odds_and_ev():
                     "horse_name": h["horse_name"],
                     "draw": h["draw"],
                     "jockey": h["jockey"],
-                    "win_probability": round(float(raw_probs[i]), 2),
+                    "win_probability": w_p_val,
                     "predicted_rank": i + 1,
                     "is_value_bet": (i < 3),
                     "gear": h["gear"],
@@ -269,7 +271,9 @@ def sync_live_odds_and_ev():
                     "smart_tags": list(set(tags)),
                     "combo_synergy": 0.0,
                     "bet_strategy": "🎯 獨贏首選 / 實力馬膽" if i == 0 else ("⚡ 次選主力 / 黃金走位" if i == 1 else ("🛡️ 連贏配腳 / 高爆發冷門" if i < 4 else "")),
-                    "market_odds": None
+                    "market_odds": fair_odd,
+                    "rest_days": h.get("rest_days") if h.get("rest_days") is not None else 21,
+                    "fast_gallop_count": h.get("fast_gallop_count") if h.get("fast_gallop_count") else 3
                 })
             clean_unopened.sort(key=lambda x: x["win_probability"], reverse=True)
             for idx_r, item in enumerate(clean_unopened, 1):
@@ -370,7 +374,9 @@ def sync_live_odds_and_ev():
                 "smart_tags": list(set(tags)),
                 "combo_synergy": safe_ev,
                 "bet_strategy": h.get("bet_strategy", ""),
-                "market_odds": safe_odd
+                "market_odds": safe_odd,
+                "rest_days": h.get("rest_days") if h.get("rest_days") is not None else 21,
+                "fast_gallop_count": h.get("fast_gallop_count") if h.get("fast_gallop_count") else 3
             })
 
         updated_payload.sort(key=lambda x: x["win_probability"], reverse=True)

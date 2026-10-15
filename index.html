@@ -205,11 +205,18 @@
                 <span v-if="isCurrentPoolOpen && (h.place_odds || extractPlace(h))" class="text-sky-700 font-bold bg-sky-50 px-1.5 py-0.5 rounded border border-sky-200">
                   位置: {{ h.place_odds || extractPlace(h) }}倍
                 </span>
-                <span v-if="!isCurrentPoolOpen || (!h.market_odds && !h.place_odds && !extractPlace(h))" class="text-slate-500 bg-slate-100 px-1.5 py-0.5 rounded text-[11px] font-semibold">
-                  {{ isCurrentPoolOpen ? '賠率: 待開盤' : '賠率: 賽前一日12:00開盤' }}
+                <span v-if="!isCurrentPoolOpen && h.market_odds" class="text-slate-600 bg-slate-100 px-1.5 py-0.5 rounded border border-slate-200 text-[11px] font-semibold">
+                  AI公允賠率: {{ h.market_odds }}倍 (賽前一日12:00開盤)
+                </span>
+                <span v-else-if="!h.market_odds && !h.place_odds && !extractPlace(h)" class="text-slate-500 bg-slate-100 px-1.5 py-0.5 rounded text-[11px] font-semibold">
+                  賠率: 賽前一日12:00開盤
                 </span>
                 <span v-if="h.weight">•</span>
                 <span v-if="h.weight">負磅: <strong class="text-slate-700">{{ h.weight }}磅</strong></span>
+                <span v-if="h.rest_days !== undefined && h.rest_days !== null">•</span>
+                <span v-if="h.rest_days !== undefined && h.rest_days !== null">休息: <strong class="text-slate-700">{{ h.rest_days === 0 ? '初出' : h.rest_days + '日' }}</strong></span>
+                <span v-if="h.fast_gallop_count">•</span>
+                <span v-if="h.fast_gallop_count">快跳: <strong class="text-slate-700">{{ h.fast_gallop_count }}課</strong></span>
                 <span>•</span>
                 <span>配備: {{ h.gear || '-' }}</span>
               </div>

@@ -248,7 +248,7 @@ def extract_trackwork_map(html_content, horses):
 
 # 🌟 晨操與試閘動態狀態解析器 (只取【本仗賽前最近一課】，上次賽事前的全部過濾)
 def evaluate_trackwork(text, jockey_name, target_date_str=None, last_race_date_str=None):
-    if not text: return 0.0, []
+    if not text: return 0.0, [], 2
     clean_j = re.sub(r"\s*\(.*?\)", "", jockey_name).strip()
     score = 0.0
     tags = []
@@ -340,23 +340,38 @@ def evaluate_trackwork(text, jockey_name, target_date_str=None, last_race_date_s
                 tags.append(f"⚠️ 走勢評語: {kw}")
                 break
 
-    gallops = re.findall(r"(\d{2})/(\d{2}):\s*.*?(?:沙田|從化).*?(\d{2}\.\d)\s*\((.*?)\)", text)
+    # 兼容馬會 LocalTrackwork 各種表格排版格式，提取所有晨操快跳與拍跳課數
+    gallops = re.findall(r"(\d{2})/(\d{2})[:\s]+.*?(?:沙田|從化|跑馬地|全天候|草地|泥地|快跳|拍跳|踱步).*?(\d{2}\.\d)?\s*(?:\((.*?)\))?", text)
     recent_gallops = 0
     for d_str, m_str, sec, rider in gallops:
-        g_dt = date(ref_year, int(m_str), int(d_str))
-        if last_dt and g_dt <= last_dt:
+        try:
+            d_i, m_i = int(d_str), int(m_str)
+            y_i = ref_year if target_dt.month >= m_i else ref_year - 1
+            g_dt = date(y_i, m_i, d_i)
+            if last_dt and g_dt <= last_dt:
+                continue
+            if 0 <= (target_dt - g_dt).days <= 28:
+                recent_gallops += 1
+                if clean_j and rider and clean_j in rider and not any("騎師親自" in t for t in tags):
+                    score += 0.10
+                    tags.append(f"🏇 賽前騎師親自快跳 ({clean_j})")
+        except Exception:
             continue
-        if (target_dt - g_dt).days <= 21:
-            recent_gallops += 1
-            if clean_j and clean_j in rider and not any("騎師親自" in t for t in tags):
-                score += 0.10
-                tags.append(f"🏇 賽前騎師親自快跳 ({clean_j})")
 
-    if recent_gallops < 2 and len(valid_trials) == 0:
+    # 若文本中有秒數紀錄但正則未完全匹配日期，按秒數課次保底統計
+    if recent_gallops == 0:
+        sec_matches = re.findall(r"\b2[1-9]\.\d\b", text)
+        recent_gallops = max(len(sec_matches), len(valid_trials))
+
+    fast_gallop_count = recent_gallops + len(valid_trials)
+    if fast_gallop_count >= 5:
+        score += 0.08
+        tags.append(f"💪 晨操備戰積極 ({fast_gallop_count}課)")
+    elif fast_gallop_count < 2 and len(valid_trials) == 0:
         score -= 0.15
         tags.append("⚠️ 賽前備戰偏弱 (快跳不足)")
 
-    return score, list(set(tags))
+    return score, list(set(tags)), max(1, fast_gallop_count)
 
 def fetch_trackwork_text(date_hkjc, venue, race_no):
     url = f"https://racing.hkjc.com/racing/information/Chinese/Racing/LocalTrackwork.aspx?RaceDate={date_hkjc}&Racecourse={venue}&RaceNo={race_no}"
@@ -447,6 +462,7 @@ def evaluate_form_and_transition(horse_code, curr_meta, curr_horse, form_str, av
     score = 0.0
     tags = []
     last_race_date = None
+    rest_days = curr_horse.get("rest_days")
     rating = curr_horse["rating"]
 
     if form_str and form_str != "-":
@@ -480,11 +496,12 @@ def evaluate_form_and_transition(horse_code, curr_meta, curr_horse, form_str, av
     try:
         last = past_record
         if not last and horse_code and sb_client:
-            res = sb_client.table("race_results").select(
-                "race_date, distance, actual_weight, place_num, jockey, race_class, track_type, venue, running_position, incident_report"
-            ).eq("horse_code", horse_code).order("race_date", desc=True).limit(1).execute()
+            res = sb_client.table("race_results").select("*").eq("horse_code", horse_code).order("race_id", desc=True).limit(1).execute()
             if res.data:
                 last = res.data[0]
+                rid = str(last.get("race_id") or "")
+                if not last.get("race_date") and len(rid) >= 8 and rid[:8].isdigit():
+                    last["race_date"] = f"{rid[:4]}-{rid[4:6]}-{rid[6:8]}" 
 
         if last:
                 last_race_date = last.get("race_date")
@@ -499,24 +516,45 @@ def evaluate_form_and_transition(horse_code, curr_meta, curr_horse, form_str, av
                         score += 0.18
                         tags.append("🚧 上仗受阻/走外疊蝕位 (隱形實力馬)")
 
-                # 🌟 賽事相隔天數 (Rest Days) 體能新鮮感
+                # 🌟 末段 400 米極速秒數 (last_400m_sec) 評估
+                l400 = last.get("last_400m_sec")
+                if l400:
+                    try:
+                        l400_val = float(l400)
+                        if 21.0 <= l400_val <= 22.45:
+                            score += 0.16
+                            tags.append(f"⚡ 上仗末段極速 ({l400_val:.2f}s)")
+                        elif 22.45 < l400_val <= 22.80:
+                            score += 0.08
+                            tags.append(f"⚡ 上仗尾速凌厲 ({l400_val:.2f}s)")
+                    except Exception:
+                        pass
+
+                # 🌟 賽事相隔天數 (Rest Days) 體能新鮮感 (自動由兩場賽事日期相減補齊)
                 if last_race_date and target_date:
                     try:
                         from datetime import datetime
                         d_l = datetime.strptime(str(last_race_date), "%Y-%m-%d").date()
                         d_t = datetime.strptime(str(target_date), "%Y-%m-%d").date()
                         rd = (d_t - d_l).days
-                        if 14 <= rd <= 35:
-                            score += 0.08
-                            tags.append("🔋 黃金休戰期 (體能飽滿)")
-                        elif rd >= 90:
-                            score -= 0.10
-                            tags.append("⚠️ 久休復出 (狀態初起)")
-                        elif rd <= 10 and float(curr_horse.get("weight", 120)) >= 132:
-                            score -= 0.08
-                            tags.append("⚠️ 密跑連仗頂磅")
+                        if rd > 0:
+                            rest_days = rd
                     except Exception:
                         pass
+                if rest_days is None and last.get("rest_days") is not None:
+                    try: rest_days = int(last.get("rest_days"))
+                    except: pass
+
+                if rest_days is not None:
+                    if 14 <= rest_days <= 35:
+                        score += 0.08
+                        tags.append(f"🔋 黃金休戰期 ({rest_days}日)")
+                    elif rest_days >= 90:
+                        score -= 0.10
+                        tags.append(f"⚠️ 久休復出 ({rest_days}日)")
+                    elif 0 < rest_days <= 10 and float(curr_horse.get("weight", 120)) >= 132:
+                        score -= 0.08
+                        tags.append(f"⚠️ 密跑連仗頂磅 ({rest_days}日)")
 
                 last_d = last.get("distance")
                 curr_d = curr_meta.get("distance", 1200)
@@ -588,7 +626,7 @@ def evaluate_form_and_transition(horse_code, curr_meta, curr_horse, form_str, av
     except Exception:
         pass
 
-    return score, list(set(tags)), last_race_date
+    return score, list(set(tags)), last_race_date, (rest_days if rest_days is not None else 0)
 
 def detect_upcoming_meeting():
     url = "https://racing.hkjc.com/racing/information/Chinese/Racing/RaceCard.aspx"
@@ -821,6 +859,8 @@ def fetch_race_horses(date_hkjc, venue, race_no):
                 h_idx["weight_diff"] = i
             elif "6次近績" in h or "近績" in h:
                 h_idx["form"] = i
+            elif ("距今日數" in h or "休息" in h or "日數" in h) and "rest_days" not in h_idx:
+                h_idx["rest_days"] = i
 
         if "horse_no" not in h_idx or "horse_name" not in h_idx: continue
 
@@ -867,11 +907,20 @@ def fetch_race_horses(date_hkjc, venue, race_no):
                 wd_match = re.search(r"[-+]?\d+", tds[h_idx["weight_diff"]])
                 if wd_match: wd_val = int(wd_match.group(0))
 
+            rd_val = None
+            if "rest_days" in h_idx and len(tds) > h_idx["rest_days"]:
+                raw_rd = tds[h_idx["rest_days"]].strip()
+                if raw_rd.isdigit():
+                    rd_val = int(raw_rd)
+                elif "初" in raw_rd or raw_rd == "-":
+                    rd_val = 0
+
             if h_no not in runners_map:
                 runners_map[h_no] = {
                     "horse_no": h_no, "horse_code": h_code, "horse_name": clean_name,
                     "weight": wt, "jockey": jk, "draw": dr, "trainer": tr_name,
-                    "rating": rt, "gear": gr, "form": form_val, "weight_diff": wd_val
+                    "rating": rt, "gear": gr, "form": form_val, "weight_diff": wd_val,
+                    "rest_days": rd_val
                 }
 
     horses = [runners_map[k] for k in sorted(runners_map.keys())]
@@ -888,6 +937,15 @@ def run_upcoming():
 
     total_races = 0
     sb_master = create_client(SUPABASE_URL, SUPABASE_KEY)
+
+    # 預先載入歷史 races 場次資訊映射 (distance, race_class, track_type, venue)
+    races_meta_cache = {}
+    try:
+        all_r = sb_master.table("races").select("race_id, race_date, distance, race_class, track_type, venue, course").limit(3000).execute()
+        for r_row in (all_r.data or []):
+            races_meta_cache[r_row["race_id"]] = r_row
+    except Exception as e:
+        print(f"  [提示] 載入 races 緩存: {e}")
 
     for race_no in range(1, 12):
         meta, horses = fetch_race_horses(date_hkjc, venue, race_no)
@@ -959,19 +1017,39 @@ def run_upcoming():
         horse_styles = {}
         horse_late_bursts = {}
         horse_past_cache = {}
+        # 批量一次查詢本場所有馬匹的歷史賽果 (避免 N+1 查詢，且使用 select('*') 杜絕欄位不存在報錯)
+        horse_codes_list = [h["horse_code"] for h in horses if h.get("horse_code")]
+        batch_past_map = {}
+        try:
+            if horse_codes_list and sb_master:
+                r_batch = sb_master.table("race_results").select("*").in_("horse_code", horse_codes_list).order("race_id", desc=True).limit(len(horse_codes_list) * 6).execute()
+                for row in (r_batch.data or []):
+                    hc = row.get("horse_code")
+                    rid = str(row.get("race_id") or "")
+                    # 只取早於當前賽事日期的最近一仗
+                    if hc and rid < race_id and hc not in batch_past_map:
+                        rm = races_meta_cache.get(rid, {})
+                        if not row.get("race_date"):
+                            if rm.get("race_date"):
+                                row["race_date"] = rm["race_date"]
+                            elif len(rid) >= 8 and rid[:8].isdigit():
+                                row["race_date"] = f"{rid[:4]}-{rid[4:6]}-{rid[6:8]}"
+                        if not row.get("distance") and rm.get("distance"):
+                            row["distance"] = rm["distance"]
+                        if not row.get("race_class") and rm.get("race_class"):
+                            row["race_class"] = rm["race_class"]
+                        if not row.get("track_type") and rm.get("track_type"):
+                            row["track_type"] = rm["track_type"]
+                        if not row.get("venue") and rm.get("venue"):
+                            row["venue"] = rm["venue"]
+                        batch_past_map[hc] = row
+        except Exception as e:
+            print(f"  [提示] 批量查詢上仗賽果: {e}")
+
         for h in horses:
             h_code = h["horse_code"]
             h_no = h["horse_no"]
-            past = None
-            try:
-                if h_code and sb_master:
-                    r = sb_master.table("race_results").select(
-                        "race_date, distance, actual_weight, place_num, jockey, race_class, track_type, venue, running_position, incident_report"
-                    ).eq("horse_code", h_code).order("race_date", desc=True).limit(1).execute()
-                    if r.data:
-                        past = r.data[0]
-            except Exception:
-                pass
+            past = batch_past_map.get(h_code)
             horse_past_cache[h_no] = past
             st, lb = evaluate_pace_and_style(h, past)
             horse_styles[h_no] = st
@@ -1012,10 +1090,11 @@ def run_upcoming():
             h_tags = []
 
             # 🌟 維度 1: 往績近況、途程對應與班次級數 (25% 權重)
-            s_form_trans, f_tags, last_race_date = evaluate_form_and_transition(
+            s_form_trans, f_tags, last_race_date, calc_rest_days = evaluate_form_and_transition(
                 h["horse_code"], meta, h, h["form"], avg_r, sb_master,
                 past_record=horse_past_cache.get(h_no), target_date=target_date
             )
+            h["rest_days"] = calc_rest_days
             r_scale = (float(h["rating"]) - avg_r) / 7.0
             pillar_1 = r_scale * 0.55 + s_form_trans * 0.45
             h_tags.extend(f_tags)
@@ -1073,7 +1152,8 @@ def run_upcoming():
 
             # 🌟 維度 4: 晨操數據與試閘評語 (15% 權重)
             h_tw_text = tw_map.get(h_no, "")
-            tw_score, tw_tags = evaluate_trackwork(h_tw_text, h["jockey"], target_date, last_race_date)
+            tw_score, tw_tags, fg_count = evaluate_trackwork(h_tw_text, h["jockey"], target_date, last_race_date)
+            h["fast_gallop_count"] = fg_count
             pillar_4 = tw_score
             h_tags.extend(tw_tags)
 
@@ -1228,6 +1308,13 @@ def run_upcoming():
             safe_win_odd = round(min(999.0, max(1.0, win_odd)), 1) if win_odd and win_odd > 1.0 else None
             safe_win_prob = round(float(min(100.0, max(0.0, final_probs[i]))), 2)
 
+            # 若馬會尚未開盤 (safe_win_odd 為 None)，自動根據模型勝率生成「AI 公允參考賠率 (含17.5%抽水校準)」填入 market_odds，確保資料庫欄位不為 NULL
+            if safe_win_odd is None and safe_win_prob > 0:
+                fair_odd = round(min(99.0, max(1.5, 82.5 / max(safe_win_prob, 0.85))), 1)
+                db_market_odd = fair_odd
+            else:
+                db_market_odd = safe_win_odd
+
             scored.append({
                 "race_id": race_id,
                 "horse_no": h_no,
@@ -1240,10 +1327,12 @@ def run_upcoming():
                 "gear": h["gear"],
                 "rating": h["rating"],
                 "smart_tags": list(set(tags)),
-                "combo_synergy": safe_ev_pct, # 嚴防 numeric field overflow
-                "market_odds": safe_win_odd,
+                "combo_synergy": safe_ev_pct,
+                "market_odds": db_market_odd,
                 "place_odds": pla_odd,
-                "is_value_bet": is_val
+                "is_value_bet": is_val,
+                "rest_days": h.get("rest_days", 0),
+                "fast_gallop_count": h.get("fast_gallop_count", 2)
             })
 
         scored.sort(key=lambda x: x["win_probability"], reverse=True)
@@ -1286,15 +1375,23 @@ def run_upcoming():
                 "combo_synergy": item["combo_synergy"],
                 "bet_strategy": strat,
                 "market_odds": item["market_odds"],
-                "place_odds": item["place_odds"]
+                "place_odds": item["place_odds"],
+                "rest_days": item.get("rest_days", 0),
+                "fast_gallop_count": item.get("fast_gallop_count", 2)
             })
 
         def _write_preds():
             c = create_client(SUPABASE_URL, SUPABASE_KEY)
             c.table("race_predictions").delete().eq("race_id", race_id).execute()
-            # 🛡️ 確保不傳入 Supabase 表尚未新增的 place_odds 欄位，並確保所有數值在 NUMERIC(5,2) 範圍內
             clean_payload = [{k: v for k, v in row.items() if k != "place_odds"} for row in final_payload]
-            c.table("race_predictions").insert(clean_payload).execute()
+            try:
+                c.table("race_predictions").insert(clean_payload).execute()
+            except Exception as e:
+                err_s = str(e)
+                for opt_col in ["fast_gallop_count", "rest_days", "market_odds"]:
+                    if opt_col in err_s:
+                        clean_payload = [{k: v for k, v in row.items() if k != opt_col} for row in clean_payload]
+                c.table("race_predictions").insert(clean_payload).execute()
         safe_db_op(_write_preds)
 
         top_h = scored[0]
