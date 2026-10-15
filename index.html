@@ -514,7 +514,7 @@
           return null;
         };
 
-        const getTagClass, githubToken, githubRepo, syncingOdds, triggerLiveOddsSync = (tag) => {
+        const getTagClass = (tag) => {
           if (!tag || typeof tag !== 'string') return 'bg-slate-100 text-slate-700 border border-slate-200';
           // 1. 👑 終極黃金狙擊 / 💎 正期望值 / 📊 凱利注碼 (尊貴金黃)
           if (tag.includes('終極黃金狙擊') || tag.includes('正期望值') || tag.includes('Kelly') || tag.includes('建議注碼')) {
