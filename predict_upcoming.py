@@ -1167,7 +1167,7 @@ def run_upcoming():
             pillar_6 = wt_score
             h_tags.extend(wt_tags)
 
-            # 🌟 全場步速與跑法戰術加成
+            # 🌟 全場步速與跑法戰術加成 (連同外檔搶前被頂三疊無遮擋風險偵測)
             h_style = horse_styles.get(h_no, "MIDFIELD")
             if is_solo_lead:
                 if h_style == "LEADER":
@@ -1181,6 +1181,7 @@ def run_upcoming():
                     h_tags.append("⚠️ 慢步速戰略受制")
                 else:
                     pace_bonus = 0.0
+                    h_tags.append("🛡️ 居中守好位")
             elif is_fast_pace:
                 if h_style == "LEADER":
                     pace_bonus = -0.12
@@ -1190,14 +1191,29 @@ def run_upcoming():
                     h_tags.append("🦅 快步速得益 (有利後勁狂追)")
                 elif h_style == "PROMINENT":
                     pace_bonus = -0.05
+                    h_tags.append("🎯 擅長跟前好位")
                 else:
                     pace_bonus = 0.05
+                    h_tags.append("🛡️ 居中黃金遮擋")
             else:
                 pace_bonus = 0.0
                 if h_style == "LEADER":
                     h_tags.append("⚡ 擅長前領放頭")
+                elif h_style == "PROMINENT":
+                    h_tags.append("🎯 擅長跟前好位")
                 elif h_style == "CLOSER":
                     h_tags.append("🦅 擅長後勁追趕")
+                else:
+                    h_tags.append("🛡️ 居中守好位")
+
+            # 🌟 外檔跟前被頂三疊無遮擋風險偵測 (Wide-Trapped Risk)
+            inside_forward_cnt = sum(
+                1 for other_h in horses
+                if other_h["draw"] < h["draw"] and other_h["draw"] <= 8 and horse_styles.get(other_h["horse_no"]) in ("LEADER", "PROMINENT")
+            )
+            if h_style in ("LEADER", "PROMINENT") and h["draw"] >= 9 and inside_forward_cnt >= 3:
+                pace_bonus -= 0.08
+                h_tags.append("⚠️ 外檔搶前防被頂三疊")
 
             # 🌟 上仗末段爆發力暗湧加成 (分段尾速狂追)
             if horse_late_bursts.get(h_no):
