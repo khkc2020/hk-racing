@@ -1,10 +1,9 @@
 name: 賽馬 AI 排位自動預測引擎
 
-# 🛡️ 永久防排隊保護鎖：永遠只保留最新一次執行，自動取消舊排隊
 concurrency:
   group: ${{ github.workflow }}
   cancel-in-progress: true
-  
+
 on:
   schedule:
     # 1. 賽前排位公佈 (週一、週四 12:30 HKT -> UTC 04:30)

@@ -1,5 +1,9 @@
 name: 賽馬 AI 歷史大數據全息回測 (1,448+場)
 
+concurrency:
+  group: ${{ github.workflow }}
+  cancel-in-progress: true
+
 on:
   workflow_dispatch:
 
