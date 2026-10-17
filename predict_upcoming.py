@@ -94,31 +94,42 @@ def safe_db_op(op_func, max_retries=4):
                 raise e
 
 # 🌟 跑道途程檔位官方統計勝率矩陣 (2024至今沙田 A 跑道)
-def get_shatin_a_draw_score(distance, draw):
+def get_shatin_a_draw_score(distance, draw, course="A"):
+    c_str = str(course).upper() if course else "A"
+    is_narrow_rail = ("C" in c_str or "B+2" in c_str)
     if distance == 1000:
-        if draw >= 10: return +0.20, ["🚀 直路看台外欄利位"]
-        elif draw >= 7: return +0.08, []
-        elif draw >= 4: return -0.05, []
-        else: return -0.20, ["⚠️ 直路內欄吃風劣勢"]
+        if draw >= 10: score, tags = +0.20, ["🚀 直路看台外欄利位"]
+        elif draw >= 7: score, tags = +0.08, []
+        elif draw >= 4: score, tags = -0.05, []
+        else: score, tags = -0.20, ["⚠️ 直路內欄吃風劣勢"]
+        return score, tags
     elif distance == 1200:
-        if 2 <= draw <= 5: return +0.25, ["🎯 短途黃金內欄"]
-        elif draw == 1: return +0.15, ["🎯 1檔貼欄好位"]
-        elif 6 <= draw <= 8: return +0.05, []
-        elif 9 <= draw <= 10: return -0.10, []
-        else: return -0.25, ["⚠️ 大外檔轉彎蝕位"]
+        if 2 <= draw <= 5: score, tags = +0.25, ["🎯 短途黃金內欄"]
+        elif draw == 1: score, tags = +0.15, ["🎯 1檔貼欄好位"]
+        elif 6 <= draw <= 8: score, tags = +0.05, []
+        elif 9 <= draw <= 10: score, tags = -0.10, []
+        else: score, tags = -0.25, ["⚠️ 大外檔轉彎蝕位"]
     elif distance == 1400:
-        if 1 <= draw <= 6: return +0.15, ["🎯 中內檔穩定佔先"]
-        elif 7 <= draw <= 9: return 0.00, []
-        else: return -0.15, []
+        if 1 <= draw <= 6: score, tags = +0.15, ["🎯 中內檔穩定佔先"]
+        elif 7 <= draw <= 9: score, tags = 0.00, []
+        else: score, tags = -0.15, []
     elif distance == 1600:
-        if 3 <= draw <= 6: return +0.25, ["🎯 一哩出閘最佳順暢位"]
-        elif 1 <= draw <= 2: return +0.08, ["貼欄但防關門"]
-        elif 7 <= draw <= 9: return -0.05, []
-        else: return -0.20, ["⚠️ 一哩急彎外疊大蝕"]
+        if 3 <= draw <= 6: score, tags = +0.25, ["🎯 一哩出閘最佳順暢位"]
+        elif 1 <= draw <= 2: score, tags = +0.08, ["貼欄但防關門"]
+        elif 7 <= draw <= 9: score, tags = -0.05, []
+        else: score, tags = -0.20, ["⚠️ 一哩急彎外疊大蝕"]
     else:
-        if 1 <= draw <= 4: return +0.20, ["🎯 長途貼欄省體力"]
-        elif 5 <= draw <= 8: return +0.05, []
-        else: return -0.18, []
+        if 1 <= draw <= 4: score, tags = +0.20, ["🎯 長途貼欄省體力"]
+        elif 5 <= draw <= 8: score, tags = +0.05, []
+        else: score, tags = -0.18, []
+    if is_narrow_rail and distance > 1000:
+        if 1 <= draw <= 4:
+            score += 0.06
+            tags.append(f"🚀 田草{c_str}欄內檔黃金跑線")
+        elif draw >= 10:
+            score -= 0.06
+            tags.append(f"⚠️ 田草{c_str}欄外疊蝕腳程")
+    return score, tags
 
 # 🌟 沙田全天候跑道 (泥地) 專用檔位統計矩陣
 def get_shatin_awt_draw_score(distance, draw):
@@ -1107,7 +1118,7 @@ def run_upcoming():
             elif meta.get("track_type") == "全天候跑道":
                 d_score, d_tags = get_shatin_awt_draw_score(dist, h["draw"])
             else:
-                d_score, d_tags = get_shatin_a_draw_score(dist, h["draw"])
+                d_score, d_tags = get_shatin_a_draw_score(dist, h["draw"], course)
             pillar_2 = d_score
             h_tags.extend(d_tags)
 
@@ -1167,8 +1178,15 @@ def run_upcoming():
             pillar_6 = wt_score
             h_tags.extend(wt_tags)
 
-            # 🌟 全場步速與跑法戰術加成 (連同外檔搶前被頂三疊無遮擋風險偵測)
+            # 🌟 全場步速與跑法戰術加成 (深度耦合：賽道 × 跑道移欄 × 途程幾何)
             h_style = horse_styles.get(h_no, "MIDFIELD")
+            is_hv = (venue == "HV" or "跑馬地" in str(venue) or "谷" in str(venue))
+            is_awt = (meta.get("track_type") == "全天候跑道" or "泥" in str(meta.get("track_type", "")))
+            is_st_straight = (not is_hv and not is_awt and dist == 1000)
+            is_c_rail = ("C" in str(course).upper() or "B+2" in str(course).upper())
+            # 首彎極短途程：谷草1000/1200/1650 及 泥地1650 (出閘不足200米即入急彎)
+            is_short_first_turn = (is_hv and dist in (1000, 1200, 1650)) or (is_awt and dist == 1650)
+
             if is_solo_lead:
                 if h_style == "LEADER":
                     pace_bonus = +0.18
@@ -1187,8 +1205,12 @@ def run_upcoming():
                     pace_bonus = -0.12
                     h_tags.append("⚠️ 前段步速偏快 (慎防互搶力竭)")
                 elif h_style == "CLOSER":
-                    pace_bonus = +0.18
+                    # 谷草短直路(310m)後追折扣 vs 田草長直路(430m)後追全面釋放
+                    pace_bonus = +0.12 if is_hv else +0.18
                     h_tags.append("🦅 快步速得益 (有利後勁狂追)")
+                    if not is_hv and not is_awt and dist >= 1400:
+                        pace_bonus += 0.05
+                        h_tags.append("🛣️ 田草長直路後追黃金舞台")
                 elif h_style == "PROMINENT":
                     pace_bonus = -0.05
                     h_tags.append("🎯 擅長跟前好位")
@@ -1206,14 +1228,38 @@ def run_upcoming():
                 else:
                     h_tags.append("🛡️ 居中守好位")
 
-            # 🌟 外檔跟前被頂三疊無遮擋風險偵測 (Wide-Trapped Risk)
-            inside_forward_cnt = sum(
-                1 for other_h in horses
-                if other_h["draw"] < h["draw"] and other_h["draw"] <= 8 and horse_styles.get(other_h["horse_no"]) in ("LEADER", "PROMINENT")
-            )
-            if h_style in ("LEADER", "PROMINENT") and h["draw"] >= 9 and inside_forward_cnt >= 3:
-                pace_bonus -= 0.08
-                h_tags.append("⚠️ 外檔搶前防被頂三疊")
+            # 🏟️ 賽道與跑道移欄 × 跑法物理耦合修正
+            if is_awt:
+                # 沙田泥地：前置馬免食泥頭 (Kickback) 優勢極大，留後馬食泥沙劣勢明顯
+                if h_style in ("LEADER", "PROMINENT") and h["draw"] <= 6:
+                    pace_bonus += 0.08
+                    h_tags.append("🏜️ 泥地前置免食泥頭優勢")
+                elif h_style == "CLOSER" and not is_fast_pace:
+                    pace_bonus -= 0.06
+                    h_tags.append("⚠️ 泥地留後食泥頭劣勢")
+            elif is_hv and is_c_rail:
+                # 谷草 C / C+3 窄道短直路：內欄領放與守Box位極難被越過
+                if h_style in ("LEADER", "PROMINENT") and h["draw"] <= 5:
+                    pace_bonus += 0.08
+                    h_tags.append(f"🏟️ 谷草{course}欄短直路前置優勢")
+                elif h_style == "CLOSER" and not is_fast_pace:
+                    pace_bonus -= 0.06
+
+            # 🌟 外檔跟前被頂三疊無遮擋風險偵測 (沙田1000米直路豁免；首彎極短途程懲罰加倍)
+            if not is_st_straight:
+                inside_forward_cnt = sum(
+                    1 for other_h in horses
+                    if other_h["draw"] < h["draw"] and other_h["draw"] <= 8 and horse_styles.get(other_h["horse_no"]) in ("LEADER", "PROMINENT")
+                )
+                min_wide_draw = 8 if is_short_first_turn else 9
+                min_inside_cnt = 2 if is_short_first_turn else 3
+                if h_style in ("LEADER", "PROMINENT") and h["draw"] >= min_wide_draw and inside_forward_cnt >= min_inside_cnt:
+                    if is_short_first_turn:
+                        pace_bonus -= 0.14
+                        h_tags.append("⚠️ 首彎極短外檔防被頂三疊")
+                    else:
+                        pace_bonus -= 0.08
+                        h_tags.append("⚠️ 外檔搶前防被頂三疊")
 
             # 🌟 上仗末段爆發力暗湧加成 (分段尾速狂追)
             if horse_late_bursts.get(h_no):

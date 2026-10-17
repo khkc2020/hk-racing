@@ -178,9 +178,12 @@
 
         <!-- 模擬走位視覺化跑道圖 -->
         <div v-if="showSpeedMap" class="mt-2.5 bg-gradient-to-r from-emerald-950 via-teal-950 to-emerald-950 rounded-xl p-3 text-white shadow-inner border border-emerald-800/60">
-          <!-- 內欄指示條與終點方向 -->
-          <div class="flex items-center justify-between text-[11px] text-emerald-300 font-bold pb-2 mb-2 border-b border-emerald-800/80">
-            <span class="flex items-center gap-1">🟢 內欄 (貼欄慳位 Rail)</span>
+          <!-- 內欄/看台外欄指示條與賽道幾何標籤 -->
+          <div class="flex flex-wrap items-center justify-between gap-1 text-[11px] text-emerald-300 font-bold pb-2 mb-2 border-b border-emerald-800/80">
+            <span class="flex items-center gap-1.5">
+              <span>{{ speedMapData.railTopLabel }}</span>
+              <span class="bg-emerald-900/90 text-emerald-100 border border-emerald-600/50 px-1.5 py-0.5 rounded text-[10px]">{{ speedMapData.trackGeometryBadge }}</span>
+            </span>
             <span class="tracking-widest text-amber-300 font-black">═══ 跑進方向 (終點) 🏁 ═══➤</span>
           </div>
 
@@ -227,7 +230,7 @@
                     <span class="font-bold">{{ h.horse_name }}</span>
                   </div>
                   <div class="flex items-center gap-1 flex-shrink-0">
-                    <span v-if="h.laneTag === '貼欄'" class="text-[10px] px-1 rounded bg-emerald-600/80 text-white font-bold">貼欄</span>
+                    <span v-if="h.laneTag === '貼欄' || h.laneTag === '外欄'" class="text-[10px] px-1 rounded bg-emerald-600/80 text-white font-bold">{{ h.laneTag }}</span>
                     <span v-else-if="h.laneTag === '三疊'" class="text-[10px] px-1 rounded bg-orange-600/90 text-white font-bold">⚠️三疊</span>
                     <span class="text-[10px] px-1 rounded bg-black/40 text-slate-300">{{ h.draw }}檔</span>
                   </div>
@@ -253,7 +256,7 @@
                     <span class="font-bold">{{ h.horse_name }}</span>
                   </div>
                   <div class="flex items-center gap-1 flex-shrink-0">
-                    <span v-if="h.laneTag === '貼欄'" class="text-[10px] px-1 rounded bg-emerald-600/80 text-white font-bold">🎯貼欄</span>
+                    <span v-if="h.laneTag === '貼欄' || h.laneTag === '外欄'" class="text-[10px] px-1 rounded bg-emerald-600/80 text-white font-bold">🎯{{ h.laneTag }}</span>
                     <span v-else-if="h.laneTag === '三疊'" class="text-[10px] px-1 rounded bg-orange-600/90 text-white font-bold">⚠️三疊</span>
                     <span class="text-[10px] px-1 rounded bg-black/40 text-slate-300">{{ h.draw }}檔</span>
                   </div>
@@ -279,7 +282,7 @@
                     <span class="font-bold">{{ h.horse_name }}</span>
                   </div>
                   <div class="flex items-center gap-1 flex-shrink-0">
-                    <span v-if="h.laneTag === '貼欄'" class="text-[10px] px-1 rounded bg-emerald-600/80 text-white font-bold">⚡貼欄</span>
+                    <span v-if="h.laneTag === '貼欄' || h.laneTag === '外欄'" class="text-[10px] px-1 rounded bg-emerald-600/80 text-white font-bold">⚡{{ h.laneTag }}</span>
                     <span v-else-if="h.laneTag === '三疊'" class="text-[10px] px-1 rounded bg-orange-600/90 text-white font-bold">⚠️焗切入</span>
                     <span class="text-[10px] px-1 rounded bg-black/40 text-slate-300">{{ h.draw }}檔</span>
                   </div>
@@ -290,8 +293,8 @@
           </div>
 
           <!-- 外疊指示條 -->
-          <div class="flex items-center justify-between text-[10px] text-orange-300/90 font-semibold pt-2 mt-2 border-t border-emerald-800/80">
-            <span>🟠 外疊 (大外檔轉彎三疊望空風險區 Wide)</span>
+          <div class="flex flex-wrap items-center justify-between gap-1 text-[10px] text-orange-300/90 font-semibold pt-2 mt-2 border-t border-emerald-800/80">
+            <span>{{ speedMapData.railBottomLabel }}</span>
             <span>👑 金框 = AI 首選馬膽 • 綠框 = 前三主力</span>
           </div>
 
@@ -557,22 +560,66 @@
             else midfielders.push(item);
           });
 
-          // 各區按檔位由內欄(小)至外疊(大)排序，並標記貼欄與三疊風險
+          const rMeta = currentRace.value || {};
+          const venue = rMeta.venue || 'ST';
+          const dist = parseInt(rMeta.distance) || 1200;
+          const trackType = rMeta.track_type || '草地';
+          const course = rMeta.course || 'A';
+          const isHV = (venue === 'HV' || String(venue).includes('跑馬地') || String(venue).includes('谷'));
+          const isAWT = (String(trackType).includes('全天候') || String(trackType).includes('泥'));
+          const isSTStraight = (!isHV && !isAWT && dist === 1000);
+          const isShortFirstTurn = (isHV && [1000, 1200, 1650].includes(dist)) || (isAWT && dist === 1650);
+          const isNarrowCourse = String(course).toUpperCase().includes('C') || String(course).toUpperCase().includes('B+2');
+
+          // 各區按賽道特性排序：沙田1000米直路以大外檔(看台外欄)置頂；其餘轉彎途程以內欄(1檔)置頂
           const assignLanes = (arr, isForward) => {
-            arr.sort((a, b) => a.drawNum - b.drawNum);
-            arr.forEach((item, idx) => {
-              if (idx === 0 && item.drawNum <= 5) {
-                item.laneTag = '貼欄';
-              } else if (isForward && idx >= 2 && item.drawNum >= 8) {
-                item.laneTag = '三疊';
-              }
-            });
+            if (isSTStraight) {
+              arr.sort((a, b) => b.drawNum - a.drawNum);
+              arr.forEach((item) => {
+                if (item.drawNum >= 10) item.laneTag = '外欄';
+              });
+            } else {
+              arr.sort((a, b) => a.drawNum - b.drawNum);
+              const wideDrawThreshold = isShortFirstTurn ? 8 : 9;
+              arr.forEach((item, idx) => {
+                if (idx === 0 && item.drawNum <= 5) {
+                  item.laneTag = '貼欄';
+                } else if (isForward && idx >= 2 && item.drawNum >= wideDrawThreshold) {
+                  item.laneTag = '三疊';
+                }
+              });
+            }
           };
 
           assignLanes(leaders, true);
           assignLanes(prominents, true);
           assignLanes(midfielders, false);
           assignLanes(closers, false);
+
+          const railTopLabel = isSTStraight
+            ? '🟢 看台大外欄黃金跑線 (10-14檔最利 Stands Side)'
+            : '🟢 內欄 (貼欄慳位 Inside Rail)';
+          const railBottomLabel = isSTStraight
+            ? '🟠 內欄 1-3 檔直路食風劣勢區 (Inside Disadvantage)'
+            : (isShortFirstTurn
+                ? '🟠 外疊 (首彎極短！8檔外搶前極易被頂三疊望空蝕位)'
+                : '🟠 外疊 (大外檔轉彎三疊望空風險區 Wide)');
+
+          let trackGeometryBadge = '';
+          let trackContextNote = '';
+          if (isSTStraight) {
+            trackGeometryBadge = '🛣️ 沙田1000米全直路 • 無彎位';
+            trackContextNote = ' 【賽道耦合】沙田1000米直路賽無轉彎三疊風險，排10檔或以外貼近看台大外欄推進最具場地優勢，1至3檔反而容易食風受制。';
+          } else if (isAWT) {
+            trackGeometryBadge = `🏜️ 沙田全天候泥地 ${dist}米${dist === 1650 ? ' • 首彎極短' : ''}`;
+            trackContextNote = ` 【賽道耦合】沙田泥地受「食泥頭 (Kickback)」物理效應影響極深，前領及守二疊前列的馬匹免食泥沙勝率大幅提升${dist === 1650 ? '；且泥地1650米出閘即入首個急彎，外檔馬極難切入' : ''}。`;
+          } else if (isHV) {
+            trackGeometryBadge = `🏟️ 谷草 ${course} 欄 ${dist}米 • 310米短直路${isShortFirstTurn ? ' • 首彎極短' : ''}`;
+            trackContextNote = ` 【賽道耦合】跑馬地直路僅310米${isNarrowCourse ? `（今日採用 ${course} 窄道移欄，內欄偏差更極端）` : ''}，貼欄放頭或守Box位馬匹極佔便宜${isShortFirstTurn ? `；且谷草${dist}米出閘不久即入急彎，外檔搶前極易被頂三疊` : ''}。`;
+          } else {
+            trackGeometryBadge = `🛣️ 田草 ${course} 欄 ${dist}米 • 430米長直路`;
+            trackContextNote = ` 【賽道耦合】沙田草地直路長達430米${isNarrowCourse ? `（${course}欄內中檔具黃金跑線優勢）` : ''}，若早段步速偏快，中後追馬有充足直路空間望空衝刺。`;
+          }
 
           // 推演全場步速形勢
           let paceLabel = '⚖️ 預計正常均速 (攻守均衡)';
@@ -581,7 +628,7 @@
 
           const wideTrapped = [...leaders, ...prominents].filter(x => x.laneTag === '三疊');
           const wideWarning = wideTrapped.length > 0
-            ? ` ⚠️ 注意 ${wideTrapped.map(x => x.horse_no + '號' + x.horse_name + '(' + x.drawNum + '檔)').join('、')} 排外檔搶前，轉彎恐被頂在三疊望空蝕位。`
+            ? ` ⚠️ 注意 ${wideTrapped.map(x => x.horse_no + '號' + x.horse_name + '(' + x.drawNum + '檔)').join('、')} 排外檔搶前，${isShortFirstTurn ? '首彎極短下極易' : '轉彎恐'}被頂在三疊望空蝕位。`
             : '';
 
           if (leaders.length <= 1) {
@@ -590,8 +637,8 @@
             const loneLeader = leaders[0] || prominents[0];
             const boxHorses = prominents.slice(0, 2).map(x => `${x.horse_no}號${x.horse_name}(${x.drawNum}檔)`).join('、');
             commentary = loneLeader
-              ? `本場缺乏快馬爭頭，預計由 ${loneLeader.horse_no}號${loneLeader.horse_name}(${loneLeader.drawNum}檔) 單騎掌控慢步速，「放鳶」偷雞機會極高！緊隨其後守好位的 ${boxHorses || '內檔跟前馬'} 亦大佔便宜，留後馬恐受制於慢步速難追。${wideWarning}`
-              : `全場無正宗放頭馬，預計早段步速偏慢，排內檔能順勢守前的馬匹最佔先機。${wideWarning}`;
+              ? `本場缺乏快馬爭頭，預計由 ${loneLeader.horse_no}號${loneLeader.horse_name}(${loneLeader.drawNum}檔) 單騎掌控慢步速，「放鳶」偷雞機會極高！緊隨其後守好位的 ${boxHorses || '內檔跟前馬'} 亦大佔便宜，留後馬恐受制於慢步速難追。${wideWarning}${trackContextNote}`
+              : `全場無正宗放頭馬，預計早段步速偏慢，排好檔能順勢守前的馬匹最佔先機。${wideWarning}${trackContextNote}`;
           } else if (leaders.length >= 3 || (leaders.length === 2 && prominents.length >= 4)) {
             paceLabel = `🔥 預計快步速 (${leaders.length}駒爭頭 • 利好後追)`;
             badgeClass = 'bg-rose-50 text-rose-800 border-rose-300';
@@ -601,13 +648,13 @@
               .slice(0, 2)
               .map(x => `${x.horse_no}號${x.horse_name}`)
               .join('、');
-            commentary = `前段有 ${leadNames} 同場搶放爭奪內欄，早段步速勢必偏快甚至互燒力竭！極利好中後疊儲足體力、末段衝刺強勁的 ${topClosers || '後追馬'} 入直路一網打盡！${wideWarning}`;
+            commentary = `前段有 ${leadNames} 同場搶放，早段步速勢必偏快甚至互燒力竭！極利好中後疊儲足體力、末段衝刺強勁的 ${topClosers || '後追馬'} 入直路一網打盡！${wideWarning}${trackContextNote}`;
           } else {
             paceLabel = `⚖️ 預計標準步速 (${leaders.length}駒領放 • 利黃金遮擋)`;
             badgeClass = 'bg-sky-50 text-sky-800 border-sky-300';
             const leadNames = leaders.map(x => `${x.horse_no}號${x.horse_name}(${x.drawNum}檔)`).join('、');
             const boxNames = prominents.slice(0, 2).map(x => `${x.horse_no}號${x.horse_name}(${x.drawNum}檔)`).join('、');
-            commentary = `早段預計由 ${leadNames} 帶出正常步速，形勢公道；守二疊黃金遮擋位（Box Seat）的 ${boxNames || '內中檔好位馬'} 進可攻退可守最為有利。${wideWarning}`;
+            commentary = `早段預計由 ${leadNames} 帶出正常步速，形勢公道；守二疊黃金遮擋位（Box Seat）的 ${boxNames || '內中檔好位馬'} 進可攻退可守最為有利。${wideWarning}${trackContextNote}`;
           }
 
           return {
@@ -617,7 +664,10 @@
             closers,
             paceLabel,
             badgeClass,
-            commentary
+            commentary,
+            railTopLabel,
+            railBottomLabel,
+            trackGeometryBadge
           };
         });
 
