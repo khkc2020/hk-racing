@@ -941,10 +941,108 @@ def fetch_race_horses(date_hkjc, venue, race_no):
     }
     return meta, horses
 
+def detect_intraday_track_bias(date_hkjc, venue):
+    """
+    📡 同日實時賽道偏差自適應偵測器 (Intraday Live Track Bias Detector)
+    自動掃描當日已跑完場次 (第 1 場起) 之官方賽果，統計頭三名上名馬之：
+    1. 檔位分佈 (1-6 內中檔 vs 8+ 外檔)
+    2. 沿途走位跑法 (早段守前 4 位前置馬 vs 第 8 位或以後留後馬)
+    從而動態微調同日其後場次之檔位與步速權重。
+    """
+    inside_top3 = 0
+    wide_top3 = 0
+    front_top3 = 0
+    closer_top3 = 0
+    total_top3 = 0
+    completed_races = 0
+
+    for r_no in range(1, 11):
+        url = f"https://racing.hkjc.com/racing/information/Chinese/Racing/LocalResults.aspx?RaceDate={date_hkjc}&Racecourse={venue}&RaceNo={r_no}"
+        try:
+            resp = requests.get(url, headers=HEADERS, timeout=6)
+            if resp.status_code != 200 or "沒有相關資料" in resp.text:
+                break
+            soup = BeautifulSoup(resp.text, "html.parser")
+            perf_tb = None
+            for tb in soup.find_all("table"):
+                txt_h = tb.get_text()
+                if "名次" in txt_h and "馬名" in txt_h and "檔位" in txt_h:
+                    perf_tb = tb
+                    break
+            if not perf_tb:
+                break
+
+            headers = [th.get_text(strip=True) for th in perf_tb.find("tr").find_all(["td", "th"])]
+            draw_idx = next((i for i, h in enumerate(headers) if "檔位" in h), 7)
+            pos_idx = next((i for i, h in enumerate(headers) if "沿途走位" in h), 9)
+
+            race_has_top3 = False
+            for tr in perf_tb.find_all("tr")[1:]:
+                tds = [td.get_text(" ", strip=True) for td in tr.find_all("td")]
+                if len(tds) <= max(draw_idx, 2):
+                    continue
+                pl_str = tds[0].strip()
+                if pl_str in ("1", "2", "3", "01", "02", "03"):
+                    race_has_top3 = True
+                    total_top3 += 1
+                    d_str = tds[draw_idx].strip()
+                    if d_str.isdigit():
+                        d_val = int(d_str)
+                        if d_val <= 6:
+                            inside_top3 += 1
+                        elif d_val >= 8:
+                            wide_top3 += 1
+                    if len(tds) > pos_idx:
+                        pos_parts = [int(x) for x in tds[pos_idx].split() if x.isdigit()]
+                        if pos_parts:
+                            if pos_parts[0] <= 4:
+                                front_top3 += 1
+                            elif pos_parts[0] >= 8:
+                                closer_top3 += 1
+            if race_has_top3:
+                completed_races += 1
+            else:
+                break
+        except Exception:
+            break
+
+    bias = {
+        "completed_races": completed_races,
+        "inside_boost": 0.0,
+        "wide_boost": 0.0,
+        "front_boost": 0.0,
+        "closer_boost": 0.0,
+        "summary": "尚未有已完成賽事"
+    }
+    if completed_races >= 1 and total_top3 >= 3:
+        inside_ratio = inside_top3 / total_top3
+        wide_ratio = wide_top3 / total_top3
+        front_ratio = front_top3 / total_top3
+        closer_ratio = closer_top3 / total_top3
+
+        notes = []
+        if inside_ratio >= 0.60:
+            bias["inside_boost"] = 0.08
+            notes.append(f"內中檔(1-6檔)上名率 {int(inside_ratio*100)}% 佔優")
+        elif wide_ratio >= 0.55:
+            bias["wide_boost"] = 0.07
+            notes.append(f"中外檔(8檔+)上名率 {int(wide_ratio*100)}% 佔優")
+
+        if front_ratio >= 0.55:
+            bias["front_boost"] = 0.08
+            notes.append(f"前置守好位(頭段前4)上名率 {int(front_ratio*100)}% 佔優")
+        elif closer_ratio >= 0.50:
+            bias["closer_boost"] = 0.08
+            notes.append(f"後追衝刺(頭段8位後)上名率 {int(closer_ratio*100)}% 佔優")
+
+        bias["summary"] = f"已跑 {completed_races} 場: " + (" | ".join(notes) if notes else "偏差均衡")
+    return bias
+
 def run_upcoming():
     print("=== 🏇 香港賽馬 AI：學術級「勝率量化預測 + 正期望值 (EV) + 1/4 Kelly 資金控管」全息引擎 ===")
     target_date, date_hkjc, venue = detect_upcoming_meeting()
-    print(f"賽事日期: {target_date} ({venue}) | 賽道: A跑道")
+    intraday_bias = detect_intraday_track_bias(date_hkjc, venue)
+    print(f"賽事日期: {target_date} ({venue}) | 實時賽道偏差偵測: {intraday_bias['summary']}")
 
     total_races = 0
     sb_master = create_client(SUPABASE_URL, SUPABASE_KEY)
@@ -1305,7 +1403,24 @@ def run_upcoming():
                     wp_divergence_bonus = +0.12
                     h_tags.append("🎯 大戶位置鎖定 (假冷真熱)")
 
-            # 綜合六大專業維度 + 步速戰術加成 + 資金流雙維加成
+            # 📡 模組 3: 同日已跑場次實時跑道偏差動態微調 (Intraday Live Track Bias)
+            intraday_bonus = 0.0
+            if intraday_bias.get("completed_races", 0) >= 1 and not is_st_straight:
+                if intraday_bias["inside_boost"] > 0 and h["draw"] <= 6:
+                    intraday_bonus += intraday_bias["inside_boost"]
+                    h_tags.append("📡 今日實時偏差: 1-6內中檔利位")
+                elif intraday_bias["wide_boost"] > 0 and h["draw"] >= 8:
+                    intraday_bonus += intraday_bias["wide_boost"]
+                    h_tags.append("📡 今日實時偏差: 外疊場地有利")
+
+                if intraday_bias["front_boost"] > 0 and h_style in ("LEADER", "PROMINENT"):
+                    intraday_bonus += intraday_bias["front_boost"]
+                    h_tags.append("📡 今日實時偏差: 場地乾快利前置")
+                elif intraday_bias["closer_boost"] > 0 and h_style == "CLOSER":
+                    intraday_bonus += intraday_bias["closer_boost"]
+                    h_tags.append("📡 今日實時偏差: 直路利後追衝刺")
+
+            # 綜合六大專業維度 + 步速戰術加成 + 資金流雙維加成 + 同日實時偏差微調
             total_feature = (
                 (pillar_1 * 0.25) + 
                 (pillar_2 * 0.20) + 
@@ -1313,7 +1428,7 @@ def run_upcoming():
                 (pillar_4 * 0.15) + 
                 (pillar_5 * 0.10) + 
                 (pillar_6 * 0.10)
-            ) + pace_bonus + odds_velocity_bonus + wp_divergence_bonus
+            ) + pace_bonus + odds_velocity_bonus + wp_divergence_bonus + intraday_bonus
             scores.append(total_feature)
             tags_meta[h_no] = list(set(h_tags))
 
