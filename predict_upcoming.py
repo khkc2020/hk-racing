@@ -123,11 +123,14 @@ def get_shatin_a_draw_score(distance, draw, course="A"):
         elif 5 <= draw <= 8: score, tags = +0.05, []
         else: score, tags = -0.18, []
     if is_narrow_rail and distance > 1000:
-        if 1 <= draw <= 4:
+        if draw == 2:
+            score += 0.10
+            tags.append(f"👑 田草{c_str}欄黃金2檔")
+        elif 1 <= draw <= 5:
             score += 0.06
             tags.append(f"🚀 田草{c_str}欄內檔黃金跑線")
         elif draw >= 10:
-            score -= 0.06
+            score -= 0.07
             tags.append(f"⚠️ 田草{c_str}欄外疊蝕腳程")
     return score, tags
 
@@ -1342,6 +1345,29 @@ def run_upcoming():
                     h_tags.append(f"🏟️ 谷草{course}欄短直路前置優勢")
                 elif h_style == "CLOSER" and not is_fast_pace:
                     pace_bonus -= 0.06
+            elif not is_hv and not is_awt and is_c_rail:
+                # 沙田草地 C / C+3 窄道：季初/好地處女草皮極利中長途(1600m+)及1200m前置順放與Box位
+                if dist >= 1600 and h_style in ("LEADER", "PROMINENT"):
+                    pace_bonus += 0.14
+                    h_tags.append(f"🏟️ 田草{course}欄中長途前置高速路")
+                elif dist == 1200 and h_style in ("LEADER", "PROMINENT") and h["draw"] <= 6:
+                    pace_bonus += 0.08
+                    h_tags.append(f"🏟️ 田草{course}欄短途內中檔先手")
+                elif dist >= 1600 and h_style == "CLOSER" and not is_fast_pace:
+                    pace_bonus -= 0.08
+
+            # 🎯 C+3 / C 欄同軌窄道往績專家偵測 (如上仗於C/C+3欄入前三名，再跑C/C+3欄額外加分)
+            if is_c_rail and past_rec:
+                last_rid = str(past_rec.get("race_id") or "")
+                last_rm = races_meta_cache.get(last_rid, {})
+                last_course = str(last_rm.get("course") or "")
+                try:
+                    last_pl = int(str(past_rec.get("placing") or "99").strip())
+                except Exception:
+                    last_pl = 99
+                if ("C" in last_course.upper()) and 1 <= last_pl <= 3:
+                    pace_bonus += 0.10
+                    h_tags.append(f"🎯 {course}欄窄道上名專家")
 
             # 🌟 外檔跟前被頂三疊無遮擋風險偵測 (沙田1000米直路豁免；首彎極短途程懲罰加倍)
             if not is_st_straight:
