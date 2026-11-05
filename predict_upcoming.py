@@ -1,3 +1,298 @@
+
+與 Gemini 對話
+分析一下, 並睇睇有無野可以優化? 主要預測模型睇咩?
+
+你上傳嘅壓縮檔（hk-racing-main.zip）目前喺系統解析中只顯示咗檔案目錄結構，而入面嘅原始碼內容全部變成咗二進制亂碼，所以我暫時睇唔到入面具體寫咗咩 Feature 同埋用咗邊種 Algorithm。
+
+不過單憑檔案結構，已經可以睇得出你成個量化賽馬系統嘅架構脈絡，同時亦可以針對呢類架構提出幾個關鍵嘅優化方向：
+
+1. 現有系統架構分析（根據檔案目錄）
+成個 Project 採用咗好標準嘅 Serverless / GitHub Actions 自動化 Pipeline 架構：   
+hk-racing-main (1).zip
+
+數據回填與收集 (backfill_past_seasons.py / backfill_history.yml)：負責抓取往績數據建立歷史 Database。   
+hk-racing-main (1).zip
+
+賽前預測 (predict_upcoming.py / predict_cron.yml)：透過 Cron Job 定時執行，生成排位及賽事預測結果。   
+hk-racing-main (1).zip
+
+即時賠率同步 (sync_odds_live.py / sync_odds.yml)：喺開跑前定時拉取最新賠率（Win/Place Odds），用嚟捕捉臨場資金流向（Smart Money / 落飛）。   
+hk-racing-main (1).zip
+
+回測與賽後檢討 (backtest_current_model.py / post_race_review.py)：驗證模型表現、計算 ROI，並喺賽後對比預測與實際賽果。   
+hk-racing-main (1).zip
+
+前端展示 (index.html)：單頁式 Dashboard（估計係透過 GitHub Pages 或靜態託管展示預測結果同臨場數據）。   
+hk-racing-main (1).zip
+
+2. 架構層面嘅初步優化建議
+GitHub Actions sync_odds.yml 嘅延遲問題：GitHub Actions 嘅 schedule (cron) 最密只可以每 5 分鐘行一次，而且喺繁忙時段經常會有幾分鐘至十幾分鐘嘅 Queue Delay。對於香港賽馬臨開跑前最後 3 至 5 分鐘嘅「極速落飛」或者賠率異動，GitHub Actions 好容易會 Miss 咗最關鍵嘅 Snapshot。建議臨場賠率呢部分可以考慮移去輕量級雲端（例如 Cloudflare Workers Cron、AWS Lambda 或本地 Script）做秒級/分鐘級抓取。
+
+特徵工程與模型訓練分離：目錄入面有 predict_upcoming.py 同 backtest_current_model.py，但見唔到獨立嘅 features.py 或 model_train.py。如果特徵計算（Feature Engineering）嘅 Logic 同時重複寫喺 Backtest 同 Predict 兩邊，好容易會出現 Training-Serving Skew（回測同實戰計法有微小出入），亦都有機會喺 Backtest 唔小心引入 Data Leakage（用咗未來數據）。抽一個共用嘅 feature_pipeline.py 出嚟會穩陣好多。   
+hk-racing-main (1).zip
+
+3. 下一步：點樣俾我深入睇你個預測模型？
+因為 .zip 壓縮檔內容無法直接讀取，如果你想我幫你詳細分析主要預測模型睇緊咩特徵（例如點樣計 Track Bias、檔位偏差、步速、配備變動、騎練動態等）同埋搵出 Code 入面可以優化嘅地方，你可以：
+
+直接將 predict_upcoming.py 同埋 backtest_current_model.py 呢兩個核心 Python 檔（唔使壓縮成 zip）直接上傳上嚟；或者   
+hk-racing-main (1).zip
+
+直接 Copy & Paste predict_upcoming.py 入面計算 Score / 載入 Model 嘅核心 Code 貼過嚟。   
+hk-racing-main (1).zip
+
+你貼過嚟之後，我就可以直接同你拆解入面嘅權重邏輯、Feature 設計同埋潛在 Bug！
+
+我可唔可以比file你? 唔zip?
+
+你已停止此答覆
+睇完你呢兩個核心 Python 檔（predict_upcoming.py 同 backtest_current_model.py），成個系統嘅邏輯非常清晰。你用咗一套「80% 專家規則特徵 (Rule-based Heuristics) + 20% 市場隱含概率 (Market Implied Probability)」嘅混合量化模型，再加埋 Softmax 場內歸一化、正期望值 (EV) 過濾同埋 1/4 Kelly 注碼控制。   
+predict_upcoming.py
++ 3
+
+以下為你拆解主要預測模型睇緊咩，然後直接指出 Code 入面極之關鍵嘅 Data Leakage（未來數據洩漏）同埋可以深度優化嘅地方。
+
+一、 主要預測模型睇緊咩？（核心架構拆解）
+喺 predict_upcoming.py 入面，每隻馬嘅基礎評分 total_feature 由 6 大基礎維度（加權 100%） 再加 4 個動態戰術/資金流外掛 Bonus 組成：   
+predict_upcoming.py
+
+1. 六大基礎實力維度 (Pillar 1 ~ 6)
+維度	權重	主要睇咩指標與加扣分邏輯
+Pillar 1：往績、班次與狀態	25%	
+• 班內評分優勢 (55%)：(馬匹評分 - 同場平均評分) / 7.0 
+predict_upcoming.py
+
+
+• 上仗轉變與近況 (45%)：近 6 仗名次、升降班（降班 +0.22）、路程變動（縮程 +0.15）、負磅增減（減 5 磅以上 +0.18）、換大師傅/見習生、相隔日數（14-35日黃金期 +0.08）、競賽事件報告塞車/外疊受阻黑馬 (+0.18)、上仗末段 400m 極速 (<=22.45s 加 0.16) 
+predict_upcoming.py
+
+Pillar 2：跑道與檔位偏差	20%	
+• 分開 沙田草地、沙田泥地 (AWT)、跑馬地 (HV) 三個獨立 Matrix。 
+predict_upcoming.py
+
+
+• 考慮埋移欄效應（例如谷草 C / C+3 欄 1-3 檔額外 +0.08；沙田窄欄 2 檔額外 +0.10；田草 1000m 直路外檔 10 檔以上 +0.20）。 
+predict_upcoming.py
+
+Pillar 3：騎練與負磅	20%	
+• 負磅區間 (40%)：124-129 磅黃金負磅 +0.18，134 磅以上頂磅 -0.22。 
+predict_upcoming.py
+
+
+• 主場與減磅 (25%)：見習生減磅 +0.12、方嘉柏跑谷草主場 +0.15。 
+predict_upcoming.py
+
+
+• 頂級騎練與原庄配搭 (35%)：Hardcode 咗潘頓 (1.0)、麥道朗 (0.95)、蔡約翰 (0.92) 等 Tier 分數；上仗同一頂級騎師連騎再加 loyalty_bonus (+0.12)。 
+predict_upcoming.py
+
+Pillar 4：晨操與試閘	15%	
+• 抓取馬會 LocalTrackwork 文字，過濾出上仗之後、今仗之前嘅試閘與快跳。 
+predict_upcoming.py
+
+
+• 試閘頭三名（+0.10 至 +0.25）、騎師親自試閘/快跳（+0.10 ~ +0.12）、正面/負面評語 Keyword（如「未見底」+0.15、「需要力策」-0.15）、總課數 >=5 課加分。 
+predict_upcoming.py
+
+Pillar 5：配備變動	10%	
+• 首次戴眼罩/單邊眼罩 (B1/V1/PC1 加 0.20)、重戴 (B2/V2 加 0.10)、首次綁舌帶 (TT1/XB1 加 0.12)。 
+predict_upcoming.py
+
+Pillar 6：排位體重增減	10%	
+• 體重增加 5~15 磅 (+0.12)、平穩 (+0.05)、暴增 >=25 磅 (-0.15)、驟降 <=-18 磅 (-0.18)。 
+predict_upcoming.py
+
+2. 四大動態戰術與資金流模組（直接加落 total_feature）
+全場步速與跑法耦合 (pace_bonus)：統計同場有幾多隻 LEADER（放頭）同 PROMINENT（跟前）。如果全場得 <=1 隻放頭馬（單騎領放），放頭馬直接 +0.18；如果 >=3 隻放頭馬（快步速），後追馬 (CLOSER) 喺田草加 +0.18~0.23。同時計算埋「外檔前置馬入彎前有幾多隻內檔快馬頂住」（防被頂三疊懲罰 -0.08 ~ -0.14）。   
+predict_upcoming.py
++ 2
+
+賠率動量 (odds_velocity_bonus)：對比 Supabase 上一輪賠率，急跌 >=20% 視為「聰明錢落飛」(+0.15)，回飛 >=25% 扣 -0.10。   
+predict_upcoming.py
+
+獨贏/位置背離度 (wp_divergence_bonus)：獨贏 7 倍以上，但位置隱含概率比獨贏高出 45% 以上（大戶買位置保本伏兵），加 +0.12。   
+predict_upcoming.py
+
+同日實時跑道偏差 (intraday_bonus)：自動爬當日已跑完場次嘅頭三名檔位同走位，如果當日內檔或前置馬佔比超過 55%~60%，後面場次自動動態加 +0.07 ~ +0.08。   
+predict_upcoming.py
+
+3. 概率轉換與注碼決策
+Softmax 歸一化：exp(scores * 2.2) / sum() 轉成加總 100% 嘅 raw_probs。   
+predict_upcoming.py
+
+市場融合：final_probs = 0.80 * raw_probs + 0.20 * (0.7 * 獨贏去水勝率 + 0.3 * 位置去水率)。   
+predict_upcoming.py
+
+EV 與 Kelly：當 EV = P_model * Win_Odds - 1 >= +8%（且賠率 <=25 倍或勝率 >=4%），觸發價值投注，並用 1/4 Kelly 控制注碼喺本金 0.5% ~ 5.0% 之間。   
+predict_upcoming.py
+
+二、 關鍵問題與優化建議（由最嚴重到進階）
+🚨 1. backtest_current_model.py 存在嚴重嘅「未來數據洩漏 (Data Leakage)」！
+呢個係目前最致命嘅 Bug，會令你個回測勝率同 ROI 嚴重虛高（假象）：
+
+問題 A（用咗今場嘅沿途走位預測今場）：
+喺 backtest_current_model.py 第 272 行：   
+backtest_current_model.py
+
+Python
+st, lb = evaluate_pace_and_style(r.get("running_position"), dr, r.get("gear"))
+喺回測入面，r 係當場賽事嘅賽果 (race_results)！你直接將該場馬匹跑完之後嘅 running_position（例如沿途走位 10 9 2，即係後追衝上第 2 名）傳入去計 late_burst！
+因為 evaluate_pace_and_style 入面寫咗：if start_pos >= 8 and (start_pos - final_pos >= 5 or final_pos <= 5): late_burst = True，然後第 337 行直接俾咗 late_burst_bonus = 0.15！
+換言之：喺回測入面，邊隻馬喺該場比賽留後追入前五名，模型就喺賽前「預知未來」幫佢加 +0.15 分！ 同理，該場出閘搶到第 1 位嘅馬，回測亦直接當佢係 LEADER。   
+backtest_current_model.py
++ 2
+
+修正方法：喺 backtest_current_model.py 入面，每隻馬嘅 running_position、上仗名次、上仗負磅等特徵，必須取自 horse_runs 入面早於當前 race_id 嘅上一場紀錄 (prev_run)，絕對唔可以讀當前 r 嘅 running_position！
+
+⚠️ 2. 回測模型 (backtest) 同實戰模型 (predict) 嚴重不一致 (Training-Serving Skew)
+你喺 backtest_current_model.py 驗證緊嘅公式，同 predict_upcoming.py 實戰跑緊嘅公式有好大出入：
+
+權重同維度唔同：
+
+predict_upcoming.py 係 6 個 Pillar (0.25, 0.20, 0.20, 0.15, 0.10, 0.10)，騎練放喺 Pillar 3 入面佔 0.20 * 0.35 = 7%。   
+predict_upcoming.py
+
+backtest_current_model.py 係 5 個 Pillar (0.25, 0.20, 0.20, 0.15, 0.20)，騎練獨立做咗 p5 佔咗 20% 權重！   
+backtest_current_model.py
+
+新特徵寫咗計算但無放落回測評分：
+
+backtest_current_model.py 標題話納入咗 last_400m_sec 同 incident_report，Step 2 亦都好俾心機計咗 calc_last_400m，但去到 Step 4（第 282-340 行）計 curr_feature 嗰陣，完全無用到 calc_last_400m、無用到 incident_report、亦無計升降班同負磅增減！   
+backtest_current_model.py
++ 1
+
+⚠️ 3. last_400m_sec 嘅估算公式並非真實末段時間
+喺 backtest_current_model.py 第 172-182 行，因為資料庫原本無真實嘅末段 400m 時間，你用咗頭馬總時間除段數，再用 pos_gained * 0.13 同 time_gap * 0.22 去「人工推算」末段 400m 秒數。   
+backtest_current_model.py
+
+問題：如果一場慢步速賽事，頭馬完成時間慢，你條公式計出嚟全場馬嘅 base_final_400m 都會變慢；但現實中慢步速賽事嘅末段 400m 往往係極快（鬥爆末段 21.8s）！用總時間反推末段時間喺慢步速同快步速下會完全顛倒。
+
+優化建議：既然你有爬馬會賽果，不如喺 backfill 階段直接爬馬會賽果頁面或分段時間表（Sectional Times）入面真實嘅最後 400m 時間，而唔好靠總時間去估。
+
+三、 預測模型與數學邏輯優化建議
+1. 動態調整「市場隱含概率 (20%)」嘅權重（依開飛時間動態變化）
+目前你固定用 0.80 * raw_probs + 0.20 * mkt_composite_probs。   
+predict_upcoming.py
+
+問題：前一日下晝剛開飛嗰陣，彩池總投注額極少，賠率充滿雜訊；但去到開跑前 3 分鐘，彩池有過億資金，市場賠率嘅資訊含量（Efficiency）極高。相反，如果將 20% 市場賠率混入 final_probs，再用 final_probs 乘以 win_odd 去計 EV，其實會稀釋咗你自己模型嘅獨立觀點。
+
+優化：
+
+計真實勝率 (win_probability 顯示俾自己睇)：可以用 65% 模型 + 35% 市場（甚至按距離開跑時間動態調整）。
+
+計 Value Bet (EV)：應該比較 純模型勝率 (raw_probs) 同 去水後市場勝率 (win_mkt_probs) 之間嘅差距（或者用 Log-linear pooling: 
+P∝P 
+model
+α
+​
+ ⋅P 
+mkt
+1−α
+​
+ ），而唔係線性相加。線性相加會令大冷門（例如模型睇 5%，市場睇 1%）夾硬拉高，導致假正期望值（False Positive EV）。
+
+2. 位置賠率歸一化 (pla_mkt_probs) 嘅除數錯誤
+喺 predict_upcoming.py 第 686 行：   
+predict_upcoming.py
+
+Python
+pla_implied = np.array([1.0 / max(float(odds_map.get(h["horse_no"], {}).get("pla", 5.0) or 5.0), 1.01) for h in horses])
+pla_mkt_probs = (pla_implied / pla_implied.sum()) * 100.0
+數學問題：獨贏只得 1 隻馬贏，所以所有馬嘅獨贏勝率加埋係 100%；但位置（Place）有 3 個名額（或少於 7 匹馬時 2 個名額），所有馬入三甲嘅真實概率加總應該係 300%！
+
+你將 pla_implied 除以 sum() 歸一化到 100%，再喺第 792 行用 wp_ratio = p_prob / w_prob >= 1.45 去捉「假冷真熱」：   
+predict_upcoming.py
+
+因為大熱門（例如潘頓 1.8 倍獨贏，1.1 倍位置）獨贏佔咗成個 Pool 45% 概率，但位置歸一化到 100% 時佢只佔 ~25% 概率；結果所有中冷門（10~20倍馬）嘅 p_prob / w_prob 天然都會大過 1.45！這會導致幾乎每場嘅中冷門都觸發 🎯 大戶位置鎖定。   
+predict_upcoming.py
+
+修正方法：用 Harville Formula 由獨贏概率推算「理論位置概率 
+P 
+place_theo
+​
+ 」，再同實際位置賠率隱含概率（乘返 300%）對比。當 實際位置熱度 / Harville理論位置熱度 >= 1.25 時，先至係真正嘅「大戶買位置唔買W」！
+
+3. 跑法分類 (evaluate_pace_and_style) 只睇上仗 1 場太單薄
+目前判斷一隻馬係 LEADER 定 CLOSER 只睇上仗 running_position 嘅第一個數字。   
+predict_upcoming.py
+
+問題：如果一隻放頭馬（例如慣常放頭）上仗因為排 12 檔或者出閘慢咗一步留咗喺第 8 位，今仗排 1 檔，你個模型就會將佢當成 CLOSER（後追馬），仲要誤判今場無放頭馬（is_solo_lead）！
+
+優化：既然你喺第 656 行已經查咗 limit(len(horse_codes_list) * 6)（近 6 仗賽果），強烈建議取 近 3 至 5 仗嘅早段走位中位數（或取最快嗰兩仗嘅早段走位） 嚟定義佢嘅固有跑法（Running Style），準確度會大幅提升。   
+predict_upcoming.py
+
+4. 保密與安全性提醒 (Security)
+你喺 predict_upcoming.py 同 backtest_current_model.py 第 19-20 行，將 Supabase 嘅 service_role secret key 直接寫死咗做 os.environ.get 嘅 default value。如果呢個 Repo 係 Public（或者擺喺 GitHub Actions），任何人都可以用呢條 service_role key 繞過 RLS 刪走或改寫你成個 Database。記得去 Supabase Dashboard Rotate（更換）條 Key，並將 Code 入面嘅 Default Value 改為空字串 ""！   
+predict_upcoming.py
++ 1
+
+想我幫你修改 backtest_current_model.py 修復未來數據洩漏並對齊實戰特徵嗎？
+
+是
+請幫我修改你上述所建議的...並將整個檔案比我replace去github, 謝謝, 因我不太會修改
+
+已經幫你完成修改並準備好兩個完整嘅 Python 檔案，你可以直接下載並覆蓋（Replace）去你嘅 GitHub Repo：
+
+Your PY files are ready
+
+「PY」圖示
+predict_upcoming
+ PY 
+「PY」圖示
+backtest_current_model
+ PY 
+本次為你完成嘅核心修改清單
+1. predict_upcoming.py（實戰預測引擎優化）
+Harville (1973) 理論位置概率與「假冷真熱」修正：新增 compute_harville_place_probs() 函數，由獨贏市場勝率嚴格推算每匹馬嘅理論入三甲概率（總和 300% 或少於 7 匹馬時 200%），並將實際位置賠率隱含熱度與 Harville 理論值對比（實際位置熱度 / Harville理論位置熱度 >= 1.25）。徹底解決舊版將位置賠率除 100% 導致幾乎所有中冷門都誤觸發「🎯 大戶位置鎖定」嘅問題。   
+predict_upcoming.py
++ 1
+
+近 4 仗綜合跑法識別 (evaluate_pace_and_style)：將原本只睇上仗 1 場 running_position，升級為同時讀取該馬近 4 仗嘅早段走位（結合最快早段走位與中位數），避免放頭馬因為上仗偶發排大外檔留後而被誤判為後追馬 (CLOSER)。   
+predict_upcoming.py
++ 1
+
+對數線性概率池化 (Log-Linear Opinion Pooling)：將原本 0.80 * raw_probs + 0.20 * mkt_probs 嘅線性相加，升級為對數幾何加權 
+P∝P 
+model
+0.80
+​
+ ⋅P 
+mkt
+0.20
+​
+ 。避免大冷門因為線性平均而被拉高勝率，減少假正期望值（False Positive EV）。   
+predict_upcoming.py
+
+移除 Hardcoded Secret Key：已清空程式碼第 23 行寫死嘅 SUPABASE_KEY 預設值，改為純粹由環境變數 os.environ.get("SUPABASE_KEY", "") 讀取，保障資料庫安全。   
+predict_upcoming.py
+
+2. backtest_current_model.py（回測引擎修復與對齊）
+徹底消除未來數據洩漏 (Zero Data Leakage)：建立咗 prior_runs_lookup[(race_id, horse_code)] 時間序列索引，確保回測每一場比賽時，100% 只讀取該場比賽之前嘅歷史往績嚟推算跑法 (LEADER / CLOSER) 同上仗末段爆發力 (late_burst)，徹底杜絕舊版直接讀取當場賽果 running_position 預知未來嘅 Bug。   
+backtest_current_model.py
+
+100% 對齊實戰六大維度與權重：將回測引擎嘅特徵同權重（0.25, 0.20, 0.20, 0.15, 0.10, 0.10）完全對齊 predict_upcoming.py，並真正將上仗競賽事件受阻 (incident_report)、上仗末段 400m 秒數 (last_400m_sec)、升降班、負磅增減、泥地適性、跑道移欄耦合以及外檔被頂三疊懲罰全部納入回測計分。   
+predict_upcoming.py
++ 1
+
+保留真實分段時間：喺補齊資料庫 last_400m_sec 時，如果資料庫已經有真實嘅末段 400m 秒數會優先保留，只有喺 NULL 時先用公式估算。   
+backtest_current_model.py
+
+放上 GitHub 前嘅 1 個小檢查
+因為為咗安全起見，我幫你將 Code 入面寫死咗嗰條 SUPABASE_KEY 清空咗（改為 os.environ.get("SUPABASE_KEY", "")）：   
+predict_upcoming.py
++ 1
+
+請確認你 GitHub Repo 嘅 Settings ➔ Secrets and variables ➔ Actions 入面已經設定好 SUPABASE_URL 同 SUPABASE_KEY（你原本嘅 .github/workflows/*.yml 應該已經有設，如果有就完全唔使郁，直接 Replace 兩個 .py 檔就得）。   
+hk-racing-main (1).zip
+
+如果你喺自己電腦 Local 行呢兩個 Script，記得先喺 Terminal 設好環境變數（或者放喺 .env）先好執行。
+
+
+
+
+
+Gemini 是 AI，可能會出錯。
+
+已透過程式碼處理及分析
 import os
 import re
 import json
@@ -20,7 +315,7 @@ from supabase import create_client
 # ==============================================================================
 
 SUPABASE_URL = os.environ.get("SUPABASE_URL", "https://rxmkohhgznfcnhdqegwq.supabase.co")
-SUPABASE_KEY = os.environ.get("SUPABASE_KEY", "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InJ4bWtvaGhnem5mY25oZHFlZ3dxIiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc5MDQ5OTk2OCwiZXhwIjoyMTA2MDc1OTY4fQ.QUqbXyvQuVuulKbiaI0jC20aUw21l1vd4pjXWEryjuI")
+SUPABASE_KEY = os.environ.get("SUPABASE_KEY", "")
 
 HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
@@ -397,33 +692,78 @@ def fetch_trackwork_text(date_hkjc, venue, race_no):
         pass
     return ""
 
-# 🌟 跑法與走位分析器 (Leader, Prominent, Midfield, Closer) 及末段爆發力偵測
-def evaluate_pace_and_style(h, past_record):
-    pos_str = past_record.get("running_position", "") if past_record else ""
-    style = "MIDFIELD"
+# 🌟 跑法與走位分析器 (結合近3~5仗早段走位統計，精準識別 Leader, Prominent, Midfield, Closer 及末段爆發力)
+def evaluate_pace_and_style(h, past_record, past_runs_list=None):
+    runs_to_check = []
+    if past_runs_list and isinstance(past_runs_list, list):
+        runs_to_check = past_runs_list[:4]
+    elif past_record and isinstance(past_record, dict):
+        runs_to_check = [past_record]
+
+    start_positions = []
     late_burst = False
-    
-    if pos_str:
-        parts = [int(p) for p in pos_str.strip().split() if p.isdigit()]
+
+    for idx, rec in enumerate(runs_to_check):
+        pos_str = str(rec.get("running_position") or "").strip()
+        if not pos_str:
+            continue
+        parts = [int(p) for p in pos_str.split() if p.isdigit()]
         if parts:
-            start_pos = parts[0]
-            final_pos = parts[-1]
-            if start_pos == 1:
-                style = "LEADER"
-            elif 2 <= start_pos <= 4:
-                style = "PROMINENT"
-            elif 5 <= start_pos <= 7:
-                style = "MIDFIELD"
-            else:
-                style = "CLOSER"
-                
-            if start_pos >= 8 and (start_pos - final_pos >= 5 or final_pos <= 5):
+            s_pos = parts[0]
+            f_pos = parts[-1]
+            start_positions.append(s_pos)
+            # 近兩仗內曾展現留後狂追爆發力
+            if idx <= 1 and s_pos >= 8 and (s_pos - f_pos >= 5 or f_pos <= 5):
                 late_burst = True
-    else:
-        if h.get("draw", 7) <= 3 and any(g in h.get("gear", "") for g in ["B", "V", "PC"]):
+
+    style = "MIDFIELD"
+    if start_positions:
+        # 採用近仗早段走位加權（取最快兩仗均值與中位數結合，避免單場排外檔偶發留後誤判）
+        sorted_starts = sorted(start_positions)
+        rep_start = (sorted_starts[0] * 0.6 + float(np.median(start_positions)) * 0.4) if len(start_positions) >= 2 else float(start_positions[0])
+        if rep_start <= 1.6 or sorted_starts[0] == 1:
+            style = "LEADER"
+        elif rep_start <= 4.3:
             style = "PROMINENT"
-            
+        elif rep_start <= 7.5:
+            style = "MIDFIELD"
+        else:
+            style = "CLOSER"
+    else:
+        if h.get("draw", 7) <= 3 and any(g in str(h.get("gear", "")) for g in ["B", "V", "PC"]):
+            style = "PROMINENT"
+
     return style, late_burst
+
+# 🌟 學術級 Harville (1973) 理論位置概率推算器 (由獨贏勝率嚴格推導前三名/前二名入位概率)
+def compute_harville_place_probs(win_probs_pct, num_places=3):
+    p = np.clip(np.array(win_probs_pct, dtype=float) / 100.0, 1e-5, 0.999)
+    p = p / p.sum()
+    n = len(p)
+    place_probs = np.zeros(n, dtype=float)
+    for i in range(n):
+        p1 = p[i]
+        # 第 2 名概率
+        p2 = 0.0
+        for j in range(n):
+            if j == i:
+                continue
+            denom1 = max(1e-6, 1.0 - p[j])
+            p2 += p[j] * (p[i] / denom1)
+        # 第 3 名概率
+        p3 = 0.0
+        if num_places >= 3 and n >= 3:
+            for j in range(n):
+                if j == i:
+                    continue
+                denom1 = max(1e-6, 1.0 - p[j])
+                for k in range(n):
+                    if k == i or k == j:
+                        continue
+                    denom2 = max(1e-6, 1.0 - p[j] - p[k])
+                    p3 += p[j] * (p[k] / denom1) * (p[i] / denom2)
+        place_probs[i] = (p1 + p2 + (p3 if num_places >= 3 else 0.0)) * 100.0
+    return place_probs
 
 # 🌟 配備變更分析器
 def score_gear(gear_str):
@@ -1129,17 +1469,18 @@ def run_upcoming():
         horse_styles = {}
         horse_late_bursts = {}
         horse_past_cache = {}
-        # 批量一次查詢本場所有馬匹的歷史賽果 (避免 N+1 查詢，且使用 select('*') 杜絕欄位不存在報錯)
+        # 批量一次查詢本場所有馬匹的歷史賽果 (避免 N+1 查詢，保存近 5 仗紀錄以精準計算跑法與上仗數據)
         horse_codes_list = [h["horse_code"] for h in horses if h.get("horse_code")]
         batch_past_map = {}
+        batch_history_map = {}
         try:
             if horse_codes_list and sb_master:
                 r_batch = sb_master.table("race_results").select("*").in_("horse_code", horse_codes_list).order("race_id", desc=True).limit(len(horse_codes_list) * 6).execute()
                 for row in (r_batch.data or []):
                     hc = row.get("horse_code")
                     rid = str(row.get("race_id") or "")
-                    # 只取早於當前賽事日期的最近一仗
-                    if hc and rid < race_id and hc not in batch_past_map:
+                    # 只取早於當前賽事日期的歷史紀錄
+                    if hc and rid < race_id:
                         rm = races_meta_cache.get(rid, {})
                         if not row.get("race_date"):
                             if rm.get("race_date"):
@@ -1154,7 +1495,9 @@ def run_upcoming():
                             row["track_type"] = rm["track_type"]
                         if not row.get("venue") and rm.get("venue"):
                             row["venue"] = rm["venue"]
-                        batch_past_map[hc] = row
+                        if hc not in batch_past_map:
+                            batch_past_map[hc] = row
+                        batch_history_map.setdefault(hc, []).append(row)
         except Exception as e:
             print(f"  [提示] 批量查詢上仗賽果: {e}")
 
@@ -1162,8 +1505,9 @@ def run_upcoming():
             h_code = h["horse_code"]
             h_no = h["horse_no"]
             past = batch_past_map.get(h_code)
+            past_list = batch_history_map.get(h_code, [])
             horse_past_cache[h_no] = past
-            st, lb = evaluate_pace_and_style(h, past)
+            st, lb = evaluate_pace_and_style(h, past, past_list)
             horse_styles[h_no] = st
             horse_late_bursts[h_no] = lb
 
@@ -1172,26 +1516,32 @@ def run_upcoming():
         is_solo_lead = (num_leaders <= 1)
         is_fast_pace = (num_leaders >= 3 or (num_leaders == 2 and num_prominent >= 4))
 
-        # 🌟 實時市場資訊與隱含概率預先掃描 (Market Probability & Divergence Pre-scan)
+        # 🌟 實時市場資訊與 Harville 位置理論概率預先掃描 (Market Probability & Harville Divergence Pre-scan)
         win_mkt_probs_map = {}
         pla_mkt_probs_map = {}
+        harville_pla_probs_map = {}
+        num_places = 3 if len(horses) >= 7 else 2
         has_win_odds = any(h["horse_no"] in odds_map and (odds_map.get(h["horse_no"], {}).get("win") or 0) > 1.0 for h in horses)
         if has_win_odds:
             win_implied = np.array([1.0 / max(float(odds_map.get(h["horse_no"], {}).get("win", 20.0) or 20.0), 1.01) for h in horses])
             win_mkt_probs = (win_implied / win_implied.sum()) * 100.0
+            harville_pla_probs = compute_harville_place_probs(win_mkt_probs, num_places=num_places)
 
             has_pla_odds = any(h["horse_no"] in odds_map and (odds_map.get(h["horse_no"], {}).get("pla") or 0) > 1.0 for h in horses)
             if has_pla_odds:
                 pla_implied = np.array([1.0 / max(float(odds_map.get(h["horse_no"], {}).get("pla", 5.0) or 5.0), 1.01) for h in horses])
-                pla_mkt_probs = (pla_implied / pla_implied.sum()) * 100.0
-                mkt_composite_probs = 0.70 * win_mkt_probs + 0.30 * pla_mkt_probs
+                # 位置彩池總概率為 num_places * 100% (例如 3 個位置加總為 300%)
+                pla_mkt_probs_300 = (pla_implied / pla_implied.sum()) * (num_places * 100.0)
+                pla_mkt_probs_100 = pla_mkt_probs_300 / float(num_places)
+                mkt_composite_probs = 0.75 * win_mkt_probs + 0.25 * pla_mkt_probs_100
             else:
-                pla_mkt_probs = win_mkt_probs
+                pla_mkt_probs_300 = harville_pla_probs
                 mkt_composite_probs = win_mkt_probs
 
             for i_idx, h_item in enumerate(horses):
                 win_mkt_probs_map[h_item["horse_no"]] = win_mkt_probs[i_idx]
-                pla_mkt_probs_map[h_item["horse_no"]] = pla_mkt_probs[i_idx]
+                pla_mkt_probs_map[h_item["horse_no"]] = pla_mkt_probs_300[i_idx]
+                harville_pla_probs_map[h_item["horse_no"]] = harville_pla_probs[i_idx]
         else:
             mkt_composite_probs = np.zeros(len(horses))
 
@@ -1419,13 +1769,13 @@ def run_upcoming():
                 existing_drop_tag = next((t for t in prev_tags if "聰明錢落飛" in str(t)), "🔥 聰明錢落飛")
                 h_tags.append(existing_drop_tag)
 
-            # 🌟 資金流模組 2: WP 賠率背離度偵測 (獨贏冷但位置熱 —— 捕捉大戶保本伏兵)
+            # 🌟 資金流模組 2: Harville WP 賠率背離度偵測 (實際位置隱含熱度顯著超越 Harville 理論位置概率 —— 真正捕捉大戶位置伏兵)
             wp_divergence_bonus = 0.0
-            w_prob = win_mkt_probs_map.get(h_no, 0.0)
-            p_prob = pla_mkt_probs_map.get(h_no, 0.0)
-            if win_odd and win_odd >= 7.0 and pla_odd and pla_odd > 1.0 and w_prob > 0.0:
-                wp_ratio = p_prob / w_prob
-                if wp_ratio >= 1.45:  # 位置隱含熱度比獨贏高出 45% 以上
+            p_prob_actual = pla_mkt_probs_map.get(h_no, 0.0)
+            p_prob_harville = harville_pla_probs_map.get(h_no, 0.0)
+            if win_odd and win_odd >= 7.0 and pla_odd and pla_odd > 1.0 and p_prob_harville > 0.0:
+                wp_ratio = p_prob_actual / p_prob_harville
+                if wp_ratio >= 1.25:  # 實際位置資金佔比超越 Harville 理論值 25% 以上
                     wp_divergence_bonus = +0.12
                     h_tags.append("🎯 大戶位置鎖定 (假冷真熱)")
 
@@ -1463,10 +1813,12 @@ def run_upcoming():
         exp_s = np.exp(scores * 2.2)
         raw_probs = (exp_s / exp_s.sum()) * 100.0
 
-        # 🌟 學術核心 2：市場資訊校準 (剔除 17.5% 抽水率，場內歸一化)
+        # 🌟 學術核心 2：對數線性概率池化校準 (Log-Linear Opinion Pooling，避免線性相加高估大冷門假正期望值)
         if has_win_odds:
-            # 80% 專業實力/步速/資金流綜合特徵 + 20% 市場資金定價權衡
-            final_probs = 0.80 * raw_probs + 0.20 * mkt_composite_probs
+            safe_raw = np.clip(raw_probs, 1e-3, 100.0)
+            safe_mkt = np.clip(mkt_composite_probs, 1e-3, 100.0)
+            log_pooled = (safe_raw ** 0.80) * (safe_mkt ** 0.20)
+            final_probs = (log_pooled / log_pooled.sum()) * 100.0
         else:
             final_probs = raw_probs
 
@@ -1609,3 +1961,5 @@ if __name__ == "__main__":
         run_upcoming()
     finally:
         close_shared_selenium_driver()
+predict_upcoming.py
+正在顯示「predict_upcoming.py」。
