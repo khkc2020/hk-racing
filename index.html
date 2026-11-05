@@ -41,7 +41,7 @@
           @click="triggerLiveOddsSync" 
           :disabled="syncingOdds" 
           class="bg-amber-500 hover:bg-amber-600 text-white px-2.5 py-1.5 rounded-xl text-xs font-black shadow-sm transition disabled:opacity-50 flex items-center gap-1 active:scale-95"
-          title="賽前一日12:00開盤後，15秒極速同步最新賠率與聰明錢"
+          title="開盤後，極速同步最新賠率與聰明錢"
         >
           <span>{{ syncingOdds ? '⏳ 秒刷中...' : '⚡ 秒刷賠率' }}</span>
         </button>
@@ -201,7 +201,6 @@
 
         <!-- 模擬走位視覺化跑道圖 -->
         <div v-if="showSpeedMap" class="mt-2.5 bg-gradient-to-r from-emerald-950 via-teal-950 to-emerald-950 rounded-xl p-3 text-white shadow-inner border border-emerald-800/60">
-          <!-- 內欄/看台外欄指示條與賽道幾何標籤 -->
           <div class="flex flex-wrap items-center justify-between gap-1 text-[11px] text-emerald-300 font-bold pb-2 mb-2 border-b border-emerald-800/80">
             <span class="flex items-center gap-1.5">
               <span>{{ speedMapData.railTopLabel }}</span>
@@ -210,9 +209,9 @@
             <span class="tracking-widest text-amber-300 font-black">═══ 跑進方向 (終點) 🏁 ═══➤</span>
           </div>
 
-          <!-- 四大走位集團 (由左至右：留後 -> 居中 -> 跟前 -> 領放) -->
+          <!-- 四大走位集團 -->
           <div class="grid grid-cols-2 sm:grid-cols-4 gap-2.5">
-            <!-- 1. 留後馬 Closer -->
+            <!-- 1. 留後馬 -->
             <div class="bg-black/25 rounded-lg p-2 border border-white/10">
               <div class="text-[11px] font-black text-sky-300 mb-1.5 flex items-center justify-between">
                 <span>🦅 留後爆末段</span>
@@ -236,7 +235,7 @@
               </div>
             </div>
 
-            <!-- 2. 居中馬 Midfield -->
+            <!-- 2. 居中馬 -->
             <div class="bg-black/25 rounded-lg p-2 border border-white/10">
               <div class="text-[11px] font-black text-emerald-300 mb-1.5 flex items-center justify-between">
                 <span>🛡️ 居中黃金遮擋</span>
@@ -262,7 +261,7 @@
               </div>
             </div>
 
-            <!-- 3. 跟前馬 Prominent -->
+            <!-- 3. 跟前馬 -->
             <div class="bg-black/25 rounded-lg p-2 border border-white/10">
               <div class="text-[11px] font-black text-amber-300 mb-1.5 flex items-center justify-between">
                 <span>🎯 跟前好位 (Box)</span>
@@ -288,7 +287,7 @@
               </div>
             </div>
 
-            <!-- 4. 領放馬 Leader -->
+            <!-- 4. 領放馬 -->
             <div class="bg-black/35 rounded-lg p-2 border border-amber-400/30">
               <div class="text-[11px] font-black text-rose-300 mb-1.5 flex items-center justify-between">
                 <span>⚡ 早段搶欄領放</span>
@@ -330,7 +329,7 @@
       </div>
     </div>
 
-    <!-- 馬匹預測排行榜 (手機卡片化極致佈局) -->
+    <!-- 馬匹預測排行榜 -->
     <div v-if="predictions.length > 0" class="space-y-2.5">
       <div 
         v-for="h in predictions" 
@@ -338,10 +337,8 @@
         :class="h.predicted_rank === 1 ? 'border-amber-400 bg-amber-50/40 ring-1 ring-amber-300' : 'border-slate-200 bg-white'"
         class="p-3.5 rounded-2xl border shadow-sm transition hover:shadow-md"
       >
-        <!-- 頂行：排名、馬名、馬號、檔位、勝率 -->
         <div class="flex items-start justify-between gap-2">
           <div class="flex items-center gap-2.5">
-            <!-- 排名徽章 -->
             <div 
               :class="{
                 'bg-amber-500 text-white font-black shadow-sm': h.predicted_rank === 1,
@@ -378,24 +375,18 @@
                   位置: {{ h.place_odds || extractPlace(h) }}倍
                 </span>
                 <span v-if="!isCurrentPoolOpen && h.market_odds" class="text-slate-600 bg-slate-100 px-1.5 py-0.5 rounded border border-slate-200 text-[11px] font-semibold">
-                  AI公允賠率: {{ h.market_odds }}倍 (賽前一日12:00開盤)
-                </span>
-                <span v-else-if="!h.market_odds && !h.place_odds && !extractPlace(h)" class="text-slate-500 bg-slate-100 px-1.5 py-0.5 rounded text-[11px] font-semibold">
-                  賠率: 賽前一日12:00開盤
+                  AI公允賠率: {{ h.market_odds }}倍
                 </span>
                 <span v-if="h.weight">•</span>
                 <span v-if="h.weight">負磅: <strong class="text-slate-700">{{ h.weight }}磅</strong></span>
                 <span v-if="h.rest_days !== undefined && h.rest_days !== null">•</span>
                 <span v-if="h.rest_days !== undefined && h.rest_days !== null">休息: <strong class="text-slate-700">{{ h.rest_days === 0 ? '初出' : h.rest_days + '日' }}</strong></span>
-                <span v-if="h.fast_gallop_count">•</span>
-                <span v-if="h.fast_gallop_count">快跳: <strong class="text-slate-700">{{ h.fast_gallop_count }}課</strong></span>
                 <span>•</span>
                 <span>配備: {{ h.gear || '-' }}</span>
               </div>
             </div>
           </div>
 
-          <!-- 右側勝率與進度條 -->
           <div class="text-right flex-shrink-0">
             <div class="text-sm font-black" :class="h.predicted_rank === 1 ? 'text-amber-600 text-base' : 'text-slate-800'">
               {{ h.win_probability }}%
@@ -410,19 +401,13 @@
           </div>
         </div>
 
-        <!-- 底行：智慧標籤與策略徽章 -->
         <div class="mt-2.5 flex flex-wrap items-center gap-1.5 pt-2 border-t border-slate-100">
-          <!-- 下注策略 -->
           <span v-if="cleanStrategy(h)" class="bg-amber-100 text-amber-900 text-xs px-2 py-0.5 rounded-md font-bold">
             {{ cleanStrategy(h) }}
           </span>
-
-          <!-- 期望值 EV (僅在已開盤且具備正期望值時顯示) -->
           <span v-if="isCurrentPoolOpen && h.combo_synergy && h.combo_synergy > 0" class="bg-emerald-50 text-emerald-800 text-xs px-2 py-0.5 rounded-md font-bold border border-emerald-200">
             💎 正期望值 +{{ h.combo_synergy }}%
           </span>
-
-          <!-- 官方配備與特徵彩色智慧標籤 (未開盤時自動過濾假聰明錢/舊賠率標籤) -->
           <span 
             v-for="(tag, idx) in filterValidTags(h.smart_tags)" 
             :key="idx"
@@ -439,39 +424,30 @@
     <div v-else-if="!loading" class="bg-white rounded-2xl border border-slate-200 p-8 text-center shadow-sm">
       <span class="text-4xl block mb-2">⏳</span>
       <h3 class="text-base font-bold text-slate-800">該場次暫無 AI 預測數據</h3>
-      <p class="text-xs text-slate-400 mt-1 max-w-sm mx-auto">
-        賽事排位公佈後，GitHub Actions 自動運算完成，預測結果便會即時顯示在此。
-      </p>
       <button @click="loadDemoData" class="mt-4 bg-slate-900 hover:bg-slate-800 text-white text-xs font-bold px-4 py-2 rounded-xl shadow-sm transition active:scale-95">
         🎲 點此載入示範數據預覽效果
       </button>
     </div>
 
-    <!-- 資料庫設定視窗 Modal -->
+    <!-- 設定 Modal -->
     <div v-if="showSettings" class="fixed inset-0 bg-black/50 backdrop-blur-sm flex items-center justify-center p-4 z-50">
       <div class="bg-white rounded-2xl max-w-md w-full p-5 shadow-2xl">
         <h3 class="text-base font-bold text-slate-900 mb-2">⚙️ Supabase 資料庫連線設定</h3>
-        <p class="text-xs text-slate-500 mb-4">輸入一次後會自動儲存在本機瀏覽器，往後打開即可直接讀取。</p>
-        
         <div class="space-y-3">
           <div>
             <label class="text-xs font-bold text-slate-700 block mb-1">Supabase URL:</label>
-            <input v-model="supabaseUrl" type="text" class="w-full text-xs p-2.5 border rounded-xl outline-none focus:ring-2 focus:ring-emerald-500" placeholder="https://xxx.supabase.co" />
+            <input v-model="supabaseUrl" type="text" class="w-full text-xs p-2.5 border rounded-xl outline-none focus:ring-2 focus:ring-emerald-500" />
           </div>
           <div>
-            <label class="text-xs font-bold text-slate-700 block mb-1">Supabase Anon Key (公鑰):</label>
-            <input v-model="supabaseKey" type="password" class="w-full text-xs p-2.5 border rounded-xl outline-none focus:ring-2 focus:ring-emerald-500" placeholder="eyJhbGciOi..." />
+            <label class="text-xs font-bold text-slate-700 block mb-1">Supabase Anon Key:</label>
+            <input v-model="supabaseKey" type="password" class="w-full text-xs p-2.5 border rounded-xl outline-none focus:ring-2 focus:ring-emerald-500" />
           </div>
           <div class="border-t pt-3">
-            <div class="flex items-center justify-between mb-1">
-              <label class="text-xs font-bold text-slate-700">⚡ GitHub 快速秒刷連線 (選填):</label>
-              <span class="text-[10px] text-amber-600 font-semibold">填寫後可在網頁一鍵更新</span>
-            </div>
+            <label class="text-xs font-bold text-slate-700 block mb-1">⚡ GitHub 快速秒刷連線 (選填):</label>
             <input v-model="githubRepo" type="text" class="w-full text-xs p-2.5 border rounded-xl outline-none focus:ring-2 focus:ring-amber-500 mb-2" placeholder="GitHub倉庫 (如: khkc2020/hk-racing)" />
-            <input v-model="githubToken" type="password" class="w-full text-xs p-2.5 border rounded-xl outline-none focus:ring-2 focus:ring-amber-500" placeholder="GitHub Personal Token (ghp_...)" />
+            <input v-model="githubToken" type="password" class="w-full text-xs p-2.5 border rounded-xl outline-none focus:ring-2 focus:ring-amber-500" placeholder="GitHub Personal Token" />
           </div>
         </div>
-
         <div class="mt-5 flex justify-end gap-2">
           <button @click="showSettings = false" class="px-3 py-1.5 text-xs text-slate-600 hover:bg-slate-100 rounded-xl transition">取消</button>
           <button @click="saveSettings" class="px-4 py-1.5 text-xs font-bold bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl shadow-sm transition">儲存並連線</button>
@@ -500,8 +476,8 @@
         const showSpeedMap = ref(true);
 
         const races = ref([]);
-        const selectedDate = ref('');
-        const selectedRaceId = ref('');
+        const selectedDate = ref(localStorage.getItem('hk_sel_date') || '');
+        const selectedRaceId = ref(localStorage.getItem('hk_sel_race') || '');
         const rawPredictions = ref([]);
 
         const predictions = computed(() => {
@@ -556,7 +532,6 @@
           return races.value.find(r => r.race_id === selectedRaceId.value) || null;
         });
 
-        // 🗺️ AI 模擬走位圖與預計步速推演引擎
         const speedMapData = computed(() => {
           if (!predictions.value || predictions.value.length === 0) return null;
           const leaders = [];
@@ -606,7 +581,6 @@
           const isAWT = (String(trackType).includes('全天候') || String(trackType).includes('泥'));
           const isSTStraight = (!isHV && !isAWT && dist === 1000);
           const isShortFirstTurn = (isHV && [1000, 1200, 1650].includes(dist)) || (isAWT && dist === 1650);
-          const isNarrowCourse = String(course).toUpperCase().includes('C') || String(course).toUpperCase().includes('B+2');
 
           const assignLanes = (arr, isForward) => {
             if (isSTStraight) {
@@ -632,78 +606,29 @@
           assignLanes(midfielders, false);
           assignLanes(closers, false);
 
-          const railTopLabel = isSTStraight
-            ? '🟢 看台大外欄黃金跑線 (10-14檔最利 Stands Side)'
-            : '🟢 內欄 (貼欄慳位 Inside Rail)';
-          const railBottomLabel = isSTStraight
-            ? '🟠 內欄 1-3 檔直路食風劣勢區 (Inside Disadvantage)'
-            : (isShortFirstTurn
-                ? '🟠 外疊 (首彎極短！8檔外搶前極易被頂三疊望空蝕位)'
-                : '🟠 外疊 (大外檔轉彎三疊望空風險區 Wide)');
+          const railTopLabel = isSTStraight ? '🟢 看台大外欄黃金跑線' : '🟢 內欄 (貼欄慳位 Inside Rail)';
+          const railBottomLabel = isSTStraight ? '🟠 內欄 1-3 檔直路食風劣勢區' : '🟠 外疊 (轉彎三疊望空風險區)';
 
-          let trackGeometryBadge = '';
-          let trackContextNote = '';
-          if (isSTStraight) {
-            trackGeometryBadge = '🛣️ 沙田1000米全直路 • 無彎位';
-            trackContextNote = ' 【賽道耦合】沙田1000米直路賽無轉彎三疊風險，排10檔或以外貼近看台大外欄推進最具場地優勢，1至3檔反而容易食風受制。';
-          } else if (isAWT) {
-            trackGeometryBadge = `🏜️ 沙田全天候泥地 ${dist}米${dist === 1650 ? ' • 首彎極短' : ''}`;
-            trackContextNote = ` 【賽道耦合】沙田泥地受「食泥頭 (Kickback)」物理效應影響極深，前領及守二疊前列的馬匹免食泥沙勝率大幅提升${dist === 1650 ? '；且泥地1650米出閘即入首個急彎，外檔馬極難切入' : ''}。`;
-          } else if (isHV) {
-            trackGeometryBadge = `🏟️ 谷草 ${course} 欄 ${dist}米 • 310米短直路${isShortFirstTurn ? ' • 首彎極短' : ''}`;
-            trackContextNote = ` 【賽道耦合】跑馬地直路僅310米${isNarrowCourse ? `（今日採用 ${course} 窄道移欄，內欄偏差更極端）` : ''}，貼欄放頭或守Box位馬匹極佔便宜${isShortFirstTurn ? `；且谷草${dist}米出閘不久即入急彎，外檔搶前極易被頂三疊` : ''}。`;
-          } else {
-            trackGeometryBadge = `🛣️ 田草 ${course} 欄 ${dist}米 • 430米長直路`;
-            trackContextNote = ` 【賽道耦合】沙田草地直路長達430米${isNarrowCourse ? `（${course}欄內中檔具黃金跑線優勢）` : ''}，若早段步速偏快，中後追馬有充足直路空間望空衝刺。`;
-          }
-
-          let paceLabel = '⚖️ 預計正常均速 (攻守均衡)';
+          let trackGeometryBadge = isSTStraight ? '沙田1000米全直路' : (isAWT ? `沙田泥地 ${dist}米` : `田草 ${course}欄 ${dist}米`);
+          let paceLabel = '⚖️ 預計正常均速';
           let badgeClass = 'bg-sky-50 text-sky-800 border-sky-300';
           let commentary = '';
 
-          const wideTrapped = [...leaders, ...prominents].filter(x => x.laneTag === '三疊');
-          const wideWarning = wideTrapped.length > 0
-            ? ` ⚠️ 注意 ${wideTrapped.map(x => x.horse_no + '號' + x.horse_name + '(' + x.drawNum + '檔)').join('、')} 排外檔搶前，${isShortFirstTurn ? '首彎極短下極易' : '轉彎恐'}被頂在三疊望空蝕位。`
-            : '';
-
           if (leaders.length <= 1) {
-            paceLabel = '🐢 預計慢步速 (極利單騎領放/前置)';
+            paceLabel = '🐢 預計慢步速 (極利領放)';
             badgeClass = 'bg-emerald-50 text-emerald-800 border-emerald-300';
-            const loneLeader = leaders[0] || prominents[0];
-            const boxHorses = prominents.slice(0, 2).map(x => `${x.horse_no}號${x.horse_name}(${x.drawNum}檔)`).join('、');
-            commentary = loneLeader
-              ? `本場缺乏快馬爭頭，預計由 ${loneLeader.horse_no}號${loneLeader.horse_name}(${loneLeader.drawNum}檔) 單騎掌控慢步速，「放鳶」偷雞機會極高！緊隨其後守好位的 ${boxHorses || '內檔跟前馬'} 亦大佔便宜，留後馬恐受制於慢步速難追。${wideWarning}${trackContextNote}`
-              : `全場無正宗放頭馬，預計早段步速偏慢，排好檔能順勢守前的馬匹最佔先機。${wideWarning}${trackContextNote}`;
-          } else if (leaders.length >= 3 || (leaders.length === 2 && prominents.length >= 4)) {
-            paceLabel = `🔥 預計快步速 (${leaders.length}駒爭頭 • 利好後追)`;
+            commentary = `本場步速偏慢，預計由前領馬掌控節局，內檔跟前馬大佔便宜。`;
+          } else if (leaders.length >= 3) {
+            paceLabel = `🔥 預計快步速 (利好後追)`;
             badgeClass = 'bg-rose-50 text-rose-800 border-rose-300';
-            const leadNames = leaders.map(x => `${x.horse_no}號${x.horse_name}(${x.drawNum}檔)`).join('、');
-            const topClosers = [...closers, ...midfielders]
-              .sort((a, b) => a.predicted_rank - b.predicted_rank)
-              .slice(0, 2)
-              .map(x => `${x.horse_no}號${x.horse_name}`)
-              .join('、');
-            commentary = `前段有 ${leadNames} 同場搶放，早段步速勢必偏快甚至互燒力竭！極利好中後疊儲足體力、末段衝刺強勁的 ${topClosers || '後追馬'} 入直路一網打盡！${wideWarning}${trackContextNote}`;
+            commentary = `前段多駒爭放步速偏快，極利好中後疊儲足體力之後追馬衝刺！`;
           } else {
-            paceLabel = `⚖️ 預計標準步速 (${leaders.length}駒領放 • 利黃金遮擋)`;
+            paceLabel = `⚖️ 預計標準步速`;
             badgeClass = 'bg-sky-50 text-sky-800 border-sky-300';
-            const leadNames = leaders.map(x => `${x.horse_no}號${x.horse_name}(${x.drawNum}檔)`).join('、');
-            const boxNames = prominents.slice(0, 2).map(x => `${x.horse_no}號${x.horse_name}(${x.drawNum}檔)`).join('、');
-            commentary = `早段預計由 ${leadNames} 帶出正常步速，形勢公道；守二疊黃金遮擋位（Box Seat）的 ${boxNames || '內中檔好位馬'} 進可攻退可守最為有利。${wideWarning}${trackContextNote}`;
+            commentary = `步速正常形勢公道，守二疊黃金遮擋位之馬匹進可攻退可守。`;
           }
 
-          return {
-            leaders,
-            prominents,
-            midfielders,
-            closers,
-            paceLabel,
-            badgeClass,
-            commentary,
-            railTopLabel,
-            railBottomLabel,
-            trackGeometryBadge
-          };
+          return { leaders, prominents, midfielders, closers, paceLabel, badgeClass, commentary, railTopLabel, railBottomLabel, trackGeometryBadge };
         });
 
         const isCurrentPoolOpen = computed(() => {
@@ -712,8 +637,7 @@
             const parts = selectedDate.value.split('-');
             if (parts.length !== 3) return true;
             const raceUtc = Date.UTC(parseInt(parts[0]), parseInt(parts[1]) - 1, parseInt(parts[2]), 3, 30, 0);
-            const openTimeMs = raceUtc - (24 * 60 * 60 * 1000);
-            return Date.now() >= openTimeMs;
+            return Date.now() >= (raceUtc - (24 * 60 * 60 * 1000));
           } catch (e) {
             return true;
           }
@@ -731,111 +655,60 @@
           if (!isCurrentPoolOpen.value && (s.includes('終極黃金狙擊') || s.includes('價值突擊'))) {
             if (h.predicted_rank === 1) return '🎯 獨贏首選 / 實力馬膽';
             if (h.predicted_rank === 2) return '⚡ 次選主力 / 黃金走位';
-            if (h.predicted_rank <= 4) return '🛡️ 連贏配腳 / 實力冷門';
-            return '';
+            return '🛡️ 連贏配腳';
           }
           return s;
         };
 
         const triggerRacecardUpdate = async () => {
           if (!githubToken.value || !githubRepo.value) {
-            noticeMsg.value = '💡 請先點擊右上角「⚙️ 設定」填入 GitHub Token，即可在網頁一鍵更新最新排位表與晨操！';
+            noticeMsg.value = '💡 請先在設定填入 GitHub Token';
             return;
           }
           syncingCard.value = true;
-          noticeMsg.value = '📋 正在通知雲端重新抓取馬會最新排位表、排位體重、退出馬與晨操 (約需 45 秒)...';
           try {
-            const resp = await fetch(`https://api.github.com/repos/${githubRepo.value.trim()}/actions/workflows/predict_cron.yml/dispatches`, {
+            await fetch(`https://api.github.com/repos/${githubRepo.value.trim()}/actions/workflows/predict_cron.yml/dispatches`, {
               method: 'POST',
-              headers: {
-                'Authorization': `Bearer ${githubToken.value.trim()}`,
-                'Accept': 'application/vnd.github.v3+json',
-                'Content-Type': 'application/json'
-              },
+              headers: { 'Authorization': `Bearer ${githubToken.value.trim()}`, 'Accept': 'application/vnd.github.v3+json', 'Content-Type': 'application/json' },
               body: JSON.stringify({ ref: 'main' })
             });
-            if (!resp.ok) throw new Error('請確認 GitHub Token 已勾選 workflow 權限');
-            let attempts = 0;
-            const poll = setInterval(async () => {
-              attempts++;
-              await loadRaces();
-              if (attempts >= 12) {
-                clearInterval(poll);
-                syncingCard.value = false;
-                noticeMsg.value = '✅ 最新排位表與晨操數據已更新完畢！';
-              }
-            }, 4000);
-          } catch (e) {
-            syncingCard.value = false;
-            noticeMsg.value = '排位更新啟動失敗: ' + e.message;
-          }
+            setTimeout(() => { syncingCard.value = false; loadRaces(); noticeMsg.value = '✅ 排位更新已觸發！'; }, 4000);
+          } catch (e) { syncingCard.value = false; }
         };
 
         const triggerLiveOddsSync = async () => {
-          if (!isCurrentPoolOpen.value) {
-            noticeMsg.value = `⏳ 該賽日 (${selectedDate.value}) 尚未開盤！馬會將於賽事前一日正午 12:00 開售彩池，屆時方可刷取即時賠率與聰明錢。`;
-            return;
-          }
           if (!githubToken.value || !githubRepo.value) {
-            noticeMsg.value = '💡 請先點擊右上角「⚙️ 設定」填入 GitHub Token，即可啟用網頁 15 秒一鍵秒刷賠率！';
+            noticeMsg.value = '💡 請先在設定填入 GitHub Token';
             return;
           }
           syncingOdds.value = true;
-          noticeMsg.value = '🚀 正在透過雲端秒刷最新賠率與聰明錢 (約需 12~15 秒)...';
           try {
-            const resp = await fetch(`https://api.github.com/repos/${githubRepo.value.trim()}/actions/workflows/sync_odds.yml/dispatches`, {
+            await fetch(`https://api.github.com/repos/${githubRepo.value.trim()}/actions/workflows/sync_odds.yml/dispatches`, {
               method: 'POST',
-              headers: {
-                'Authorization': `Bearer ${githubToken.value.trim()}`,
-                'Accept': 'application/vnd.github.v3+json',
-                'Content-Type': 'application/json'
-              },
+              headers: { 'Authorization': `Bearer ${githubToken.value.trim()}`, 'Accept': 'application/vnd.github.v3+json', 'Content-Type': 'application/json' },
               body: JSON.stringify({ ref: 'main' })
             });
-            if (!resp.ok) {
-              const err = await resp.json().catch(() => ({}));
-              throw new Error(err.message || 'GitHub API 呼叫失敗，請檢查 Token 權限 (需勾選 workflow)');
-            }
-            let attempts = 0;
-            const pollInterval = setInterval(async () => {
-              attempts++;
-              await loadRaces();
-              if (attempts >= 6) {
-                clearInterval(pollInterval);
-                syncingOdds.value = false;
-                noticeMsg.value = '🎉 賠率與聰明錢落飛已成功同步完畢！';
-              }
-            }, 3000);
-          } catch (e) {
-            syncingOdds.value = false;
-            noticeMsg.value = '秒刷啟動失敗: ' + e.message;
-          }
+            setTimeout(() => { syncingOdds.value = false; loadRaces(); noticeMsg.value = '⚡ 賠率秒刷已觸發！'; }, 4000);
+          } catch (e) { syncingOdds.value = false; }
         };
 
         const loadRaces = async () => {
-          if (!initSupabase()) {
-            noticeMsg.value = '💡 提示：請點擊右上角「⚙️ 資料庫設定」輸入 Supabase Anon Key 即可啟用實時看盤！';
-            return;
-          }
+          if (!initSupabase()) return;
           loading.value = true;
-          noticeMsg.value = '';
           try {
-            const { data, error } = await sbClient
-              .from('races')
-              .select('*')
-              .order('race_date', { ascending: false })
-              .limit(50);
-            if (error) throw error;
+            const { data } = await sbClient.from('races').select('*').order('race_date', { ascending: false }).limit(50);
             races.value = data || [];
             if (races.value.length > 0) {
               if (!selectedDate.value || !dates.value.includes(selectedDate.value)) {
                 selectedDate.value = dates.value[0];
               }
-              const firstRace = currentDayRaces.value[0];
-              if (firstRace) selectRace(firstRace);
+              const dayRaces = currentDayRaces.value;
+              let targetRace = dayRaces.find(r => r.race_id === selectedRaceId.value);
+              if (!targetRace && dayRaces.length > 0) {
+                targetRace = dayRaces[0];
+              }
+              if (targetRace) selectRace(targetRace);
             }
-          } catch (e) {
-            noticeMsg.value = '讀取賽事失敗: ' + e.message;
           } finally {
             loading.value = false;
           }
@@ -843,154 +716,59 @@
 
         const selectDate = (d) => {
           selectedDate.value = d;
+          localStorage.setItem('hk_sel_date', d);
           const first = currentDayRaces.value[0];
           if (first) selectRace(first);
         };
 
-        const bestValuePicks = computed(() => {
-          if (!predictions.value || predictions.value.length < 2) return null;
-
-          const banker = predictions.value[0];
-
-          const horsesWithEV = predictions.value.map(h => {
-            let ev = 0;
-            if (typeof h.combo_synergy === 'number' && h.combo_synergy !== 0) {
-              ev = h.combo_synergy;
-            } else if (h.market_odds && h.win_probability) {
-              ev = Math.round(((h.win_probability / 100.0) * h.market_odds - 1.0) * 1000) / 10;
-            }
-            return { ...h, calculatedEV: ev };
-          });
-
-          const midCandidates = horsesWithEV.filter(h => h.horse_no !== banker.horse_no && h.market_odds >= 5.0 && h.market_odds <= 25.0);
-          midCandidates.sort((a, b) => b.calculatedEV - a.calculatedEV);
-          const bestMid = midCandidates.length > 0 ? midCandidates[0] : (predictions.value[1] || null);
-
-          const longCandidates = horsesWithEV.filter(h => 
-            h.horse_no !== banker.horse_no && 
-            (!bestMid || h.horse_no !== bestMid.horse_no) &&
-            h.market_odds >= 20.0
-          );
-          longCandidates.sort((a, b) => b.calculatedEV - a.calculatedEV);
-          const bestLong = longCandidates.length > 0 ? longCandidates[0] : (predictions.value[2] || null);
-
-          return {
-            banker: banker,
-            midValue: bestMid,
-            longshot: bestLong
-          };
-        });
-
         const selectRace = async (r) => {
           selectedRaceId.value = r.race_id;
+          localStorage.setItem('hk_sel_race', r.race_id);
           if (!sbClient) return;
-          loading.value = true;
           try {
-            const { data, error } = await sbClient
-              .from('race_predictions')
-              .select('*')
-              .eq('race_id', r.race_id)
-              .order('predicted_rank', { ascending: true });
-            if (error) throw error;
+            const { data } = await sbClient.from('race_predictions').select('*').eq('race_id', r.race_id).order('predicted_rank', { ascending: true });
             rawPredictions.value = data || [];
           } catch (e) {
             console.error(e);
-          } finally {
-            loading.value = false;
           }
         };
 
         const loadDemoData = () => {
           races.value = [
-            { race_id: 'demo_01', race_date: '2026-10-01', race_no: 1, venue: 'ST', race_class: '第四班', distance: 1200, track_type: '草地', course: 'A' },
-            { race_id: 'demo_02', race_date: '2026-10-01', race_no: 2, venue: 'ST', race_class: '第三班', distance: 1600, track_type: '草地', course: 'A' }
+            { race_id: 'demo_01', race_date: '2026-10-01', race_no: 1, venue: 'ST', race_class: '第四班', distance: 1200, track_type: '草地', course: 'A' }
           ];
           selectedDate.value = '2026-10-01';
           selectedRaceId.value = 'demo_01';
           rawPredictions.value = [
-            {
-              horse_no: 6, horse_name: '當弗主力', horse_code: 'J037', draw: 2, jockey: '潘頓', rating: 33, weight: 126, gear: 'PC1',
-              win_probability: 24.8, predicted_rank: 1, bet_strategy: '🎯 獨贏首選 / 連贏馬膽', combo_synergy: 40.0,
-              smart_tags: ['🎯 短途黃金內欄', '⚡ 單騎領放 (步速形勢大好)', '🔥 賽前試閘第1名']
-            },
-            {
-              horse_no: 12, horse_name: '輕磅伏兵', horse_code: 'K209', draw: 1, jockey: '何澤堯', rating: 28, weight: 116, gear: 'TT',
-              win_probability: 19.5, predicted_rank: 2, bet_strategy: '⚡ 次選主力', combo_synergy: 35.2,
-              smart_tags: ['🪶 輕磅飛馳', '👅 繫舌帶', '⭐ 賽前試閘第2名']
-            },
-            {
-              horse_no: 3, horse_name: '日日獎', horse_code: 'H283', draw: 4, jockey: '霍宏聲', rating: 39, weight: 132, gear: 'B2T',
-              win_probability: 16.2, predicted_rank: 3, bet_strategy: '🛡️ 連贏配腳', combo_synergy: 31.0,
-              smart_tags: ['🚀 上仗末段狂追 (暗湧實力馬)', '👓 重戴眼罩 (刺激走勢)']
-            },
-            {
-              horse_no: 1, horse_name: '機械騎士', horse_code: 'H464', draw: 3, jockey: '黃寶妮', rating: 39, weight: 128, gear: 'BT',
-              win_probability: 12.0, predicted_rank: 4, bet_strategy: '🛡️ 連贏配腳', combo_synergy: 28.0,
-              smart_tags: ['⚖️ 今日黃金負磅區', '⚠️ 賽前備戰偏弱 (快跳不足)']
-            }
+            { horse_no: 6, horse_name: '當弗主力', horse_code: 'J037', draw: 2, jockey: '潘頓', rating: 33, weight: 126, gear: 'PC1', win_probability: 24.8, predicted_rank: 1, bet_strategy: '🎯 獨贏首選', combo_synergy: 40.0, smart_tags: ['短途黃金內欄'] }
           ];
-          noticeMsg.value = '✨ 目前展示的是示範預測。在右上角輸入 Supabase Key 後即可載入真實排位！';
         };
 
         const extractPlace = (h) => {
           if (h.place_odds) return h.place_odds;
-          if (h.smart_tags && Array.isArray(h.smart_tags)) {
+          if (h.smart_tags) {
             const t = h.smart_tags.find(x => typeof x === 'string' && x.includes('位置賠率:'));
-            if (t) {
-              const m = t.match(/(\d+(\.\d+)?)/);
-              if (m) return m[1];
-            }
+            if (t) { const m = t.match(/(\d+(\.\d+)?)/); if (m) return m[1]; }
           }
           return null;
         };
 
         const getTagClass = (tag) => {
-          if (!tag || typeof tag !== 'string') return 'bg-slate-100 text-slate-700 border border-slate-200';
-          if (tag.includes('終極黃金狙擊') || tag.includes('正期望值') || tag.includes('Kelly') || tag.includes('建議注碼')) {
-            return 'bg-amber-100 text-amber-900 font-black border border-amber-300 shadow-sm';
-          }
-          if (tag.includes('聰明錢落飛') || tag.includes('大戶位置鎖定')) {
-            return 'bg-rose-100 text-rose-800 font-bold border border-rose-300 shadow-sm';
-          }
-          if (tag.includes('單騎領放') || tag.includes('快步速得益') || tag.includes('末段狂追') || tag.includes('前領放頭') || tag.includes('後勁追趕') || tag.includes('步速偏慢')) {
-            return 'bg-sky-100 text-sky-800 font-bold border border-sky-300';
-          }
-          if (tag.includes('受阻') || tag.includes('外疊蝕位') || tag.includes('隱形實力馬')) {
-            return 'bg-indigo-100 text-indigo-900 font-extrabold border border-indigo-300 shadow-sm';
-          }
-          if (tag.includes('實時微調') || tag.includes('實時偏差')) {
-            return 'bg-emerald-600 text-white font-extrabold border border-emerald-700 shadow-sm';
-          }
-          if (tag.includes('原庄配搭') || tag.includes('王牌')) {
-            return 'bg-blue-100 text-blue-900 font-bold border border-blue-300';
-          }
-          if (tag.includes('休戰期') || tag.includes('新鮮感')) {
-            return 'bg-teal-100 text-teal-800 font-semibold border border-teal-200';
-          }
-          if (tag.includes('內檔') || tag.includes('內欄') || tag.includes('輕磅') || tag.includes('黃金負磅區') || tag.includes('省體力') || tag.includes('泥地特佳') || tag.includes('減磅')) {
-            return 'bg-emerald-100 text-emerald-800 font-semibold border border-emerald-200';
-          }
-          if (tag.includes('試閘') || tag.includes('快跳') || tag.includes('走勢') || tag.includes('谷草王') || tag.includes('大師傅') || tag.includes('近況') || tag.includes('勝出') || tag.includes('頭馬') || tag.includes('舌帶')) {
-            return 'bg-purple-100 text-purple-800 font-semibold border border-purple-200';
-          }
-          if (tag.includes('首次眼罩') || tag.includes('變革') || tag.includes('頂磅') || tag.includes('回飛') || tag.includes('受制') || tag.includes('慎防') || tag.includes('暴增') || tag.includes('驟降') || tag.includes('大敗') || tag.includes('外疊')) {
-            return 'bg-orange-100 text-orange-800 font-bold border border-orange-200';
-          }
+          if (!tag) return 'bg-slate-100 text-slate-700 border border-slate-200';
+          if (tag.includes('終極黃金狙擊') || tag.includes('正期望值') || tag.includes('Kelly')) return 'bg-amber-100 text-amber-900 font-black border border-amber-300';
+          if (tag.includes('聰明錢落飛') || tag.includes('大戶位置鎖定')) return 'bg-rose-100 text-rose-800 font-bold border border-rose-300';
+          if (tag.includes('實時偏差')) return 'bg-emerald-600 text-white font-extrabold shadow-sm';
           return 'bg-slate-100 text-slate-700 border border-slate-200';
         };
 
         onMounted(() => {
-          if (initSupabase()) {
-            loadRaces();
-          } else {
-            loadDemoData();
-          }
+          if (initSupabase()) { loadRaces(); } else { loadDemoData(); }
         });
 
         return {
           supabaseUrl, supabaseKey, showSettings, loading, noticeMsg,
           dates, selectedDate, currentDayRaces, currentRace, selectedRaceId,
-          predictions, saveSettings, loadRaces, selectDate, selectRace, loadDemoData, extractPlace, bestValuePicks,
+          predictions, saveSettings, loadRaces, selectDate, selectRace, loadDemoData, extractPlace,
           getTagClass, githubToken, githubRepo, syncingOdds, syncingCard, showSpeedMap, speedMapData, autoDetectedBiasBadges, isCurrentPoolOpen, filterValidTags, cleanStrategy, triggerRacecardUpdate, triggerLiveOddsSync
         };
       }
