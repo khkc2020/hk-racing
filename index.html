@@ -61,7 +61,7 @@
       </div>
     </header>
 
-        <!-- 📊 歷史大數據實戰回測認證指標條 (1,447 場真實賽果) -->
+    <!-- 📊 歷史大數據實戰回測認證指標條 (1,447 場真實賽果) -->
     <div class="my-3 px-3.5 py-2.5 bg-gradient-to-r from-slate-900 via-indigo-950 to-slate-900 rounded-xl text-white shadow-sm flex flex-wrap items-center justify-between gap-2 border border-indigo-900/50">
       <div class="flex items-center gap-2">
         <span class="text-lg">📊</span>
@@ -157,32 +157,26 @@
         </div>
       </div>
 
-      <!-- 🎛️ 今日實時跑道偏差微調器 (依據已跑場次實時一鍵微調其後場次) -->
+      <!-- 🤖 AI 貝葉斯同日實時賽道偏差全自動學習狀態列 -->
       <div class="mt-3 pt-2.5 border-t border-slate-100 flex flex-wrap items-center justify-between gap-2">
-        <div class="text-xs font-black text-slate-700 flex items-center gap-1">
-          <span>🎛️ 同日實時跑道偏差微調 (根據已跑場次動態重算)：</span>
+        <div class="text-xs font-black text-slate-700 flex items-center gap-1.5">
+          <span>📡 AI 同日實時賽道偏差引擎 (全自動分草泥/彎直貝葉斯學習)：</span>
         </div>
         <div class="flex flex-wrap items-center gap-1.5">
-          <button
-            @click="liveBiasMode = 'NONE'"
-            :class="liveBiasMode === 'NONE' ? 'bg-slate-800 text-white shadow-sm' : 'bg-slate-100 text-slate-600 hover:bg-slate-200'"
-            class="px-2.5 py-1 rounded-lg text-[11px] font-bold transition"
-          >⚖️ 預設平衡</button>
-          <button
-            @click="liveBiasMode = 'INSIDE_FRONT'"
-            :class="liveBiasMode === 'INSIDE_FRONT' ? 'bg-emerald-600 text-white shadow-sm ring-2 ring-emerald-500/30' : 'bg-emerald-50 text-emerald-800 border border-emerald-200 hover:bg-emerald-100'"
-            class="px-2.5 py-1 rounded-lg text-[11px] font-bold transition"
-          >🟢 利內中檔+前置 (如C+3乾快場)</button>
-          <button
-            @click="liveBiasMode = 'INSIDE_DRAW'"
-            :class="liveBiasMode === 'INSIDE_DRAW' ? 'bg-teal-600 text-white shadow-sm ring-2 ring-teal-500/30' : 'bg-teal-50 text-teal-800 border border-teal-200 hover:bg-teal-100'"
-            class="px-2.5 py-1 rounded-lg text-[11px] font-bold transition"
-          >🎯 純利 1-6 內中檔</button>
-          <button
-            @click="liveBiasMode = 'WIDE_CLOSER'"
-            :class="liveBiasMode === 'WIDE_CLOSER' ? 'bg-indigo-600 text-white shadow-sm ring-2 ring-indigo-500/30' : 'bg-indigo-50 text-indigo-800 border border-indigo-200 hover:bg-indigo-100'"
-            class="px-2.5 py-1 rounded-lg text-[11px] font-bold transition"
-          >🦅 利外疊後追 (直路衝刺場)</button>
+          <span
+            v-if="autoDetectedBiasBadges.length > 0"
+            v-for="(b, bIdx) in autoDetectedBiasBadges"
+            :key="bIdx"
+            class="bg-emerald-600 text-white px-2.5 py-0.5 rounded-lg text-[11px] font-extrabold shadow-sm"
+          >
+            {{ b }}
+          </span>
+          <span
+            v-else
+            class="bg-slate-100 text-slate-600 border border-slate-200 px-2.5 py-0.5 rounded-lg text-[11px] font-bold"
+          >
+            🤖 自動監測中 (隨當日已跑完場次自動注入檔位與跑法權重，無需人手設定)
+          </span>
         </div>
       </div>
 
@@ -509,69 +503,22 @@
         const selectedDate = ref('');
         const selectedRaceId = ref('');
         const rawPredictions = ref([]);
-        const liveBiasMode = ref('NONE');
 
         const predictions = computed(() => {
+          return rawPredictions.value || [];
+        });
+
+        const autoDetectedBiasBadges = computed(() => {
           const base = rawPredictions.value || [];
-          if (base.length === 0 || liveBiasMode.value === 'NONE') return base;
-
-          const adjusted = base.map((h) => {
-            const copy = { ...h, smart_tags: Array.isArray(h.smart_tags) ? [...h.smart_tags] : [] };
-            const tagsStr = copy.smart_tags.join(' ');
-            const dr = parseInt(copy.draw) || 7;
-            const isFront = tagsStr.includes('領放') || tagsStr.includes('放頭') || tagsStr.includes('跟前') || tagsStr.includes('先手') || (dr <= 4 && !tagsStr.includes('後勁') && !tagsStr.includes('狂追'));
-            const isCloser = tagsStr.includes('後勁') || tagsStr.includes('狂追') || tagsStr.includes('末段極速') || dr >= 9;
-
-            let mult = 1.0;
-            if (liveBiasMode.value === 'INSIDE_FRONT') {
-              if (dr <= 6 && isFront) {
-                mult = 1.24;
-                copy.smart_tags.unshift('📡 實時微調: C+3內中檔+前置雙重受惠');
-              } else if (dr <= 6) {
-                mult = 1.12;
-                copy.smart_tags.unshift('📡 實時微調: 1-6內中檔有利');
-              } else if (isFront && dr <= 8) {
-                mult = 1.10;
-                copy.smart_tags.unshift('📡 實時微調: 乾快場前置受惠');
-              } else if (dr >= 9 && isCloser) {
-                mult = 0.85;
+          const found = new Set();
+          base.forEach((h) => {
+            (h.smart_tags || []).forEach((t) => {
+              if (typeof t === 'string' && t.includes('實時偏差')) {
+                found.add(t);
               }
-            } else if (liveBiasMode.value === 'INSIDE_DRAW') {
-              if (dr <= 6) {
-                mult = 1.18;
-                copy.smart_tags.unshift('📡 實時微調: 1-6內中檔加權');
-              } else if (dr >= 9) {
-                mult = 0.86;
-              }
-            } else if (liveBiasMode.value === 'WIDE_CLOSER') {
-              if (isCloser) {
-                mult = 1.22;
-                copy.smart_tags.unshift('📡 實時微調: 直路後追衝刺加權');
-              } else if (isFront && dr <= 4) {
-                mult = 0.88;
-              }
-            }
-            copy._rawProb = Math.max(0.5, (parseFloat(copy.win_probability) || 5.0) * mult);
-            return copy;
+            });
           });
-
-          const totalProb = adjusted.reduce((acc, x) => acc + x._rawProb, 0) || 100.0;
-          adjusted.forEach((x) => {
-            x.win_probability = Math.round((x._rawProb / totalProb) * 1000) / 10;
-            if (x.market_odds && parseFloat(x.market_odds) > 1.0) {
-              const p = x.win_probability / 100.0;
-              const odds = parseFloat(x.market_odds);
-              const evPct = Math.round(((p * odds) - 1.0) * 1000) / 10;
-              x.combo_synergy = evPct;
-              x.is_value_bet = (evPct >= 8.0 && (odds <= 25.0 || p >= 0.04));
-            }
-          });
-
-          adjusted.sort((a, b) => b.win_probability - a.win_probability);
-          adjusted.forEach((x, idx) => {
-            x.predicted_rank = idx + 1;
-          });
-          return adjusted;
+          return Array.from(found);
         });
 
         let sbClient = null;
@@ -609,9 +556,7 @@
           return races.value.find(r => r.race_id === selectedRaceId.value) || null;
         });
 
-        
-        // 判斷所選賽日是否已到馬會開盤時間 (賽前一日 11:30 AM HKT 後)
-                // 🗺️ AI 模擬走位圖與預計步速推演引擎
+        // 🗺️ AI 模擬走位圖與預計步速推演引擎
         const speedMapData = computed(() => {
           if (!predictions.value || predictions.value.length === 0) return null;
           const leaders = [];
@@ -634,7 +579,6 @@
             } else if (tagsStr.includes('居中')) {
               style = 'MIDFIELD';
             } else {
-              // 若舊資料庫紀錄無明確跑法標籤，依檔位、配備與負磅智能推演
               if (dr <= 3 && (gearStr.includes('B') || gearStr.includes('PC') || gearStr.includes('V'))) {
                 style = 'LEADER';
               } else if (dr <= 5) {
@@ -664,7 +608,6 @@
           const isShortFirstTurn = (isHV && [1000, 1200, 1650].includes(dist)) || (isAWT && dist === 1650);
           const isNarrowCourse = String(course).toUpperCase().includes('C') || String(course).toUpperCase().includes('B+2');
 
-          // 各區按賽道特性排序：沙田1000米直路以大外檔(看台外欄)置頂；其餘轉彎途程以內欄(1檔)置頂
           const assignLanes = (arr, isForward) => {
             if (isSTStraight) {
               arr.sort((a, b) => b.drawNum - a.drawNum);
@@ -714,7 +657,6 @@
             trackContextNote = ` 【賽道耦合】沙田草地直路長達430米${isNarrowCourse ? `（${course}欄內中檔具黃金跑線優勢）` : ''}，若早段步速偏快，中後追馬有充足直路空間望空衝刺。`;
           }
 
-          // 推演全場步速形勢
           let paceLabel = '⚖️ 預計正常均速 (攻守均衡)';
           let badgeClass = 'bg-sky-50 text-sky-800 border-sky-300';
           let commentary = '';
@@ -769,7 +711,6 @@
           try {
             const parts = selectedDate.value.split('-');
             if (parts.length !== 3) return true;
-            // 建立賽前一日 11:30 HKT (UTC+8 => UTC 03:30)
             const raceUtc = Date.UTC(parseInt(parts[0]), parseInt(parts[1]) - 1, parseInt(parts[2]), 3, 30, 0);
             const openTimeMs = raceUtc - (24 * 60 * 60 * 1000);
             return Date.now() >= openTimeMs;
@@ -781,7 +722,6 @@
         const filterValidTags = (tags) => {
           if (!tags || !Array.isArray(tags)) return [];
           if (isCurrentPoolOpen.value) return tags;
-          // 未開盤時，嚴格過濾任何舊盤殘留的賠率、聰明錢、大戶位置、EV 標籤
           const oddsKeywords = ['聰明錢', '大戶位置', '正期望值', '建議注碼', '位置賠率', '終極黃金狙擊', '回飛'];
           return tags.filter(t => !oddsKeywords.some(kw => String(t).includes(kw)));
         };
@@ -856,7 +796,6 @@
               const err = await resp.json().catch(() => ({}));
               throw new Error(err.message || 'GitHub API 呼叫失敗，請檢查 Token 權限 (需勾選 workflow)');
             }
-            // 每 3 秒輪詢一次 Supabase，持續 20 秒
             let attempts = 0;
             const pollInterval = setInterval(async () => {
               attempts++;
@@ -1007,46 +946,36 @@
 
         const getTagClass = (tag) => {
           if (!tag || typeof tag !== 'string') return 'bg-slate-100 text-slate-700 border border-slate-200';
-          // 1. 👑 終極黃金狙擊 / 💎 正期望值 / 📊 凱利注碼 (尊貴金黃)
           if (tag.includes('終極黃金狙擊') || tag.includes('正期望值') || tag.includes('Kelly') || tag.includes('建議注碼')) {
             return 'bg-amber-100 text-amber-900 font-black border border-amber-300 shadow-sm';
           }
-          // 2. 🔥 聰明錢落飛 / 🎯 大戶位置鎖定 (警戒鮮紅)
           if (tag.includes('聰明錢落飛') || tag.includes('大戶位置鎖定')) {
             return 'bg-rose-100 text-rose-800 font-bold border border-rose-300 shadow-sm';
           }
-          // 3. ⚡ 單騎領放 / 🦅 快步速得益 / 🚀 末段狂追 (戰術亮藍)
           if (tag.includes('單騎領放') || tag.includes('快步速得益') || tag.includes('末段狂追') || tag.includes('前領放頭') || tag.includes('後勁追趕') || tag.includes('步速偏慢')) {
             return 'bg-sky-100 text-sky-800 font-bold border border-sky-300';
           }
-          // 3.5 🚧 上仗受阻/走外疊蝕位 (隱形實力黑馬)
           if (tag.includes('受阻') || tag.includes('外疊蝕位') || tag.includes('隱形實力馬')) {
             return 'bg-indigo-100 text-indigo-900 font-extrabold border border-indigo-300 shadow-sm';
           }
-          // 3.6 🤝 王牌原庄配搭連騎
           if (tag.includes('實時微調') || tag.includes('實時偏差')) {
             return 'bg-emerald-600 text-white font-extrabold border border-emerald-700 shadow-sm';
           }
           if (tag.includes('原庄配搭') || tag.includes('王牌')) {
             return 'bg-blue-100 text-blue-900 font-bold border border-blue-300';
           }
-          // 3.7 🔋 黃金休戰期
           if (tag.includes('休戰期') || tag.includes('新鮮感')) {
             return 'bg-teal-100 text-teal-800 font-semibold border border-teal-200';
           }
-          // 4. 🎯 內欄先手 / 🪶 輕磅飛馳 / 泥地特佳 (優勢翡翠綠)
           if (tag.includes('內檔') || tag.includes('內欄') || tag.includes('輕磅') || tag.includes('黃金負磅區') || tag.includes('省體力') || tag.includes('泥地特佳') || tag.includes('減磅')) {
             return 'bg-emerald-100 text-emerald-800 font-semibold border border-emerald-200';
           }
-          // 5. ✨ 試閘走勢 / 騎練名師 / 近況 (實力紫)
           if (tag.includes('試閘') || tag.includes('快跳') || tag.includes('走勢') || tag.includes('谷草王') || tag.includes('大師傅') || tag.includes('近況') || tag.includes('勝出') || tag.includes('頭馬') || tag.includes('舌帶')) {
             return 'bg-purple-100 text-purple-800 font-semibold border border-purple-200';
           }
-          // 6. ⚠️ 變革警示 / 頂磅考驗 / 回飛 / 步速受制 (橙紅警示)
           if (tag.includes('首次眼罩') || tag.includes('變革') || tag.includes('頂磅') || tag.includes('回飛') || tag.includes('受制') || tag.includes('慎防') || tag.includes('暴增') || tag.includes('驟降') || tag.includes('大敗') || tag.includes('外疊')) {
             return 'bg-orange-100 text-orange-800 font-bold border border-orange-200';
           }
-          // 7. 其他通用標籤
           return 'bg-slate-100 text-slate-700 border border-slate-200';
         };
 
@@ -1062,7 +991,7 @@
           supabaseUrl, supabaseKey, showSettings, loading, noticeMsg,
           dates, selectedDate, currentDayRaces, currentRace, selectedRaceId,
           predictions, saveSettings, loadRaces, selectDate, selectRace, loadDemoData, extractPlace, bestValuePicks,
-          getTagClass, githubToken, githubRepo, syncingOdds, syncingCard, showSpeedMap, speedMapData, liveBiasMode, isCurrentPoolOpen, filterValidTags, cleanStrategy, triggerRacecardUpdate, triggerLiveOddsSync
+          getTagClass, githubToken, githubRepo, syncingOdds, syncingCard, showSpeedMap, speedMapData, autoDetectedBiasBadges, isCurrentPoolOpen, filterValidTags, cleanStrategy, triggerRacecardUpdate, triggerLiveOddsSync
         };
       }
     }).mount('#app');

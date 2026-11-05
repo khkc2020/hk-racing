@@ -8,15 +8,17 @@ from bs4 import BeautifulSoup
 from supabase import create_client
 
 # ==============================================================================
-# ⚡ 香港賽馬 AI：15秒極速「臨場排位變動 + 即時賠率 + 聰明錢落飛」同步引擎
+# ⚡ 香港賽馬 AI：15秒極速「臨場排位變動 + 即時賠率 + 聰明錢落飛 + AI 同日動態賽道偏差」同步引擎
 # 專為賽前一日開盤後及賽日臨場設計：
 # 1. 開盤守門員：賽前一日正午 12:00 前未開盤時，自動攔截舊賠率並清除誤報聰明錢標籤。
 # 2. 排位動態同步：自動檢測當日退出馬 (Scratchings)、騎師臨時易配及最新排位體重。
 # 3. 嚴格日期核對：東網鏡像強制核對賽日日期，100% 杜絕跨賽日舊賠率張冠李戴。
+# 4. AI 貝葉斯同日賽道偏差：每場跑完後自動根據草地/泥地、彎道/直路、場次信度與時間衰減，動態加權後續場次！
+# 5. Harville 位置理論概率 + 對數線性概率池化 (Log-Linear Pooling)：與 predict_upcoming.py 100% 數學對齊。
 # ==============================================================================
 
 SUPABASE_URL = os.environ.get("SUPABASE_URL", "https://rxmkohhgznfcnhdqegwq.supabase.co")
-SUPABASE_KEY = os.environ.get("SUPABASE_KEY", "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InJ4bWtvaGhnem5mY25oZHFlZ3dxIiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc5MDQ5OTk2OCwiZXhwIjoyMTA2MDc1OTY4fQ.QUqbXyvQuVuulKbiaI0jC20aUw21l1vd4pjXWEryjuI")
+SUPABASE_KEY = os.environ.get("SUPABASE_KEY", "")
 
 sb = create_client(SUPABASE_URL, SUPABASE_KEY)
 
@@ -39,6 +41,185 @@ def is_odds_pool_open(target_date_str):
         return open_dt <= now_hkt <= close_dt
     except Exception:
         return True
+
+def compute_harville_place_probs(win_probs_pct, num_places=3):
+    """學術級 Harville (1973) 理論位置概率推算器"""
+    p = np.clip(np.array(win_probs_pct, dtype=float) / 100.0, 1e-5, 0.999)
+    p = p / p.sum()
+    n = len(p)
+    place_probs = np.zeros(n, dtype=float)
+    for i in range(n):
+        p1 = p[i]
+        p2 = 0.0
+        for j in range(n):
+            if j == i:
+                continue
+            denom1 = max(1e-6, 1.0 - p[j])
+            p2 += p[j] * (p[i] / denom1)
+        p3 = 0.0
+        if num_places >= 3 and n >= 3:
+            for j in range(n):
+                if j == i:
+                    continue
+                denom1 = max(1e-6, 1.0 - p[j])
+                for k in range(n):
+                    if k == i or k == j:
+                        continue
+                    denom2 = max(1e-6, 1.0 - p[j] - p[k])
+                    p3 += p[j] * (p[k] / denom1) * (p[i] / denom2)
+        place_probs[i] = (p1 + p2 + (p3 if num_places >= 3 else 0.0)) * 100.0
+    return place_probs
+
+def detect_intraday_track_bias(date_hkjc, venue):
+    """
+    📡 AI 貝葉斯自適應賽道偏差引擎 (與 predict_upcoming.py 同步：分草泥、分彎直、場次信度與時間衰減)
+    """
+    completed_list = []
+
+    for r_no in range(1, 12):
+        url = f"https://racing.hkjc.com/racing/information/Chinese/Racing/LocalResults.aspx?RaceDate={date_hkjc}&Racecourse={venue}&RaceNo={r_no}"
+        try:
+            resp = requests.get(url, headers=HEADERS, timeout=5)
+            if resp.status_code != 200 or "沒有相關資料" in resp.text:
+                break
+            soup = BeautifulSoup(resp.text, "html.parser")
+            race_txt = soup.get_text()
+
+            perf_tb = None
+            for tb in soup.find_all("table"):
+                txt_h = tb.get_text()
+                if "名次" in txt_h and "馬名" in txt_h and "檔位" in txt_h:
+                    perf_tb = tb
+                    break
+            if not perf_tb:
+                break
+
+            dist_m = re.search(r"(\d{3,4})\s*米", race_txt)
+            r_dist = int(dist_m.group(1)) if dist_m else 1200
+            is_awt = ("全天候" in race_txt or "泥地" in race_txt)
+            is_st_str = (not is_awt and venue == "ST" and r_dist == 1000)
+            cat = "AWT" if is_awt else ("TURF_STRAIGHT" if is_st_str else "TURF_TURN")
+
+            headers = [th.get_text(strip=True) for th in perf_tb.find("tr").find_all(["td", "th"])]
+            draw_idx = next((i for i, h in enumerate(headers) if "檔位" in h), 7)
+            pos_idx = next((i for i, h in enumerate(headers) if "沿途走位" in h), 9)
+
+            top_runners = []
+            for tr in perf_tb.find_all("tr")[1:]:
+                tds = [td.get_text(" ", strip=True) for td in tr.find_all("td")]
+                if len(tds) <= max(draw_idx, 2):
+                    continue
+                pl_str = tds[0].strip()
+                if pl_str in ("1", "2", "3", "4", "01", "02", "03", "04"):
+                    pl_num = int(pl_str)
+                    pl_wt = 1.5 if pl_num == 1 else (1.2 if pl_num == 2 else (1.0 if pl_num == 3 else 0.8))
+                    d_str = tds[draw_idx].strip()
+                    d_val = int(d_str) if d_str.isdigit() else 7
+                    start_pos = None
+                    if len(tds) > pos_idx:
+                        pos_parts = [int(x) for x in tds[pos_idx].split() if x.isdigit()]
+                        if pos_parts:
+                            start_pos = pos_parts[0]
+                    top_runners.append({
+                        "place": pl_num,
+                        "weight": pl_wt,
+                        "draw": d_val,
+                        "start_pos": start_pos
+                    })
+            if len(top_runners) >= 3:
+                completed_list.append({
+                    "race_no": r_no,
+                    "category": cat,
+                    "distance": r_dist,
+                    "runners": top_runners
+                })
+            else:
+                break
+        except Exception:
+            break
+
+    def _compute_cat_bias(cat_races):
+        n_races = len(cat_races)
+        if n_races == 0:
+            return {
+                "races": 0, "confidence": 0.0,
+                "inside_boost": 0.0, "wide_boost": 0.0,
+                "front_boost": 0.0, "closer_boost": 0.0,
+                "summary": "待開跑"
+            }
+        conf = 0.38 if n_races == 1 else (0.72 if n_races == 2 else 1.00)
+        inside_w, wide_w, front_w, closer_w, total_w = 0.0, 0.0, 0.0, 0.0, 0.0
+
+        for idx, rc in enumerate(cat_races):
+            recency_wt = 0.82 ** (n_races - 1 - idx)
+            for rn in rc["runners"]:
+                w = rn["weight"] * recency_wt
+                total_w += w
+                if rn["draw"] <= 6:
+                    inside_w += w
+                elif rn["draw"] >= 8:
+                    wide_w += w
+                if rn["start_pos"] is not None:
+                    if rn["start_pos"] <= 4:
+                        front_w += w
+                    elif rn["start_pos"] >= 7:
+                        closer_w += w
+
+        in_ratio = inside_w / max(total_w, 1e-5)
+        wi_ratio = wide_w / max(total_w, 1e-5)
+        fr_ratio = front_w / max(total_w, 1e-5)
+        cl_ratio = closer_w / max(total_w, 1e-5)
+
+        in_boost, wi_boost, fr_boost, cl_boost = 0.0, 0.0, 0.0, 0.0
+        notes = []
+
+        if in_ratio >= 0.56:
+            raw_b = min(0.12, 0.05 + (in_ratio - 0.56) * 0.25)
+            in_boost = round(raw_b * conf, 3)
+            notes.append(f"內中檔(1-6檔)佔比{int(in_ratio*100)}%(+{in_boost:.2f})")
+        elif wi_ratio >= 0.50:
+            raw_b = min(0.11, 0.05 + (wi_ratio - 0.50) * 0.22)
+            wi_boost = round(raw_b * conf, 3)
+            notes.append(f"中外疊(8檔+)佔比{int(wi_ratio*100)}%(+{wi_boost:.2f})")
+
+        if fr_ratio >= 0.52:
+            raw_b = min(0.12, 0.05 + (fr_ratio - 0.52) * 0.25)
+            fr_boost = round(raw_b * conf, 3)
+            notes.append(f"前置放頭(頭段前4)佔比{int(fr_ratio*100)}%(+{fr_boost:.2f})")
+        elif cl_ratio >= 0.45:
+            raw_b = min(0.12, 0.05 + (cl_ratio - 0.45) * 0.25)
+            cl_boost = round(raw_b * conf, 3)
+            notes.append(f"後追衝刺(頭段7位後)佔比{int(cl_ratio*100)}%(+{cl_boost:.2f})")
+
+        return {
+            "races": n_races,
+            "confidence": conf,
+            "inside_boost": in_boost,
+            "wide_boost": wi_boost,
+            "front_boost": fr_boost,
+            "closer_boost": cl_boost,
+            "summary": f"已跑{n_races}場(信度{int(conf*100)}%): " + (" | ".join(notes) if notes else "偏差均衡")
+        }
+
+    turf_turn_bias = _compute_cat_bias([x for x in completed_list if x["category"] == "TURF_TURN"])
+    awt_bias = _compute_cat_bias([x for x in completed_list if x["category"] == "AWT"])
+    straight_bias = _compute_cat_bias([x for x in completed_list if x["category"] == "TURF_STRAIGHT"])
+
+    summary_parts = []
+    if turf_turn_bias["races"] > 0:
+        summary_parts.append(f"[草地彎道] {turf_turn_bias['summary']}")
+    if awt_bias["races"] > 0:
+        summary_parts.append(f"[泥地] {awt_bias['summary']}")
+    if straight_bias["races"] > 0:
+        summary_parts.append(f"[直路] {straight_bias['summary']}")
+
+    return {
+        "completed_races": len(completed_list),
+        "TURF_TURN": turf_turn_bias,
+        "AWT": awt_bias,
+        "TURF_STRAIGHT": straight_bias,
+        "summary": " ； ".join(summary_parts) if summary_parts else "尚未有已完成賽事"
+    }
 
 def get_shared_driver():
     global _SHARED_DRIVER
@@ -199,11 +380,11 @@ def fetch_live_odds_fast(target_date, venue, race_no):
     return odds_map
 
 def sync_live_odds_and_ev():
-    print("=" * 65)
-    print("⚡ 香港賽馬 AI：臨場排位變動、即時賠率與聰明錢秒刷引擎")
-    print("=" * 65)
+    print("=" * 72)
+    print("⚡ 香港賽馬 AI：臨場排位變動、即時賠率、聰明錢與 AI 同日賽道偏差秒刷引擎")
+    print("=" * 72)
 
-    r_res = sb.table("races").select("race_date, venue").order("race_date", desc=True).limit(1).execute()
+    r_res = sb.table("races").select("*").order("race_date", desc=True).limit(15).execute()
     if not r_res.data:
         print("❌ 未在資料庫中找到賽事資料，請先執行一次排位預測。")
         return
@@ -211,8 +392,12 @@ def sync_live_odds_and_ev():
     target_date = r_res.data[0]["race_date"]
     venue = r_res.data[0]["venue"]
     date_clean = target_date.replace("-", "")
+    date_hkjc = target_date.replace("-", "/")
     pool_open = is_odds_pool_open(target_date)
-    print(f"🎯 目標賽日: {target_date} ({venue}) | 彩池狀態: {'🟢 已開盤' if pool_open else '⏸️ 未開盤 (賽前一日12:00開盤)'}")
+
+    race_meta_map = {row["race_id"]: row for row in r_res.data if row.get("race_date") == target_date}
+    intraday_bias = detect_intraday_track_bias(date_hkjc, venue)
+    print(f"🎯 目標賽日: {target_date} ({venue}) | 彩池狀態: {'🟢 已開盤' if pool_open else '⏸️ 未開盤'} | 賽道偏差: {intraday_bias['summary']}")
 
     preds_res = sb.table("race_predictions").select("*").ilike("race_id", f"{date_clean}_{venue}%").execute()
     if not preds_res.data:
@@ -230,6 +415,14 @@ def sync_live_odds_and_ev():
         horses = races_dict[race_id]
         if not horses:
             continue
+
+        rm = race_meta_map.get(race_id, {})
+        dist = int(rm.get("distance") or 1200)
+        track_type = str(rm.get("track_type") or "草地")
+        is_awt = ("全天候" in track_type or "泥" in track_type)
+        is_st_straight = (not is_awt and venue == "ST" and dist == 1000)
+        cat_key = "AWT" if is_awt else ("TURF_STRAIGHT" if is_st_straight else "TURF_TURN")
+        active_bias = intraday_bias.get(cat_key) or {}
 
         # 1. 檢查排位表最新變動 (剔除退出馬、更新易配騎師)
         active_rc, scratched_nos = fetch_racecard_updates(target_date, venue, race_no)
@@ -249,10 +442,9 @@ def sync_live_odds_and_ev():
             clean_unopened = []
             for i, h in enumerate(horses):
                 tags = list(h.get("smart_tags") or [])
-                # 移除所有與賠率、聰明錢、大戶位置、EV 相關的誤報標籤
                 tags = [
                     t for t in tags
-                    if not any(kw in str(t) for kw in ["位置賠率", "正期望值", "建議注碼", "聰明錢", "大戶位置", "終極黃金狙擊", "回飛"])
+                    if not any(kw in str(t) for kw in ["位置賠率", "正期望值", "建議注碼", "聰明錢", "大戶位置", "終極黃金狙擊", "回飛", "實時偏差"])
                 ]
                 w_p_val = round(float(raw_probs[i]), 2)
                 fair_odd = round(min(99.0, max(1.5, 82.5 / max(w_p_val, 0.85))), 1)
@@ -285,7 +477,7 @@ def sync_live_odds_and_ev():
             print(f"  ✓ 第 {race_no} 場 [未開盤淨化完成]: 已清除舊盤污染並同步最新排位 ({len(clean_unopened)} 匹馬)")
             continue
 
-        # 3. 已開盤：抓取真實即時賠率
+        # 3. 已開盤：抓取真實即時賠率 + Harville 位置概率 + 貝葉斯同日賽道偏差動態注入
         odds_map = fetch_live_odds_fast(target_date, venue, race_no)
         if not odds_map:
             print(f"  • 第 {race_no} 場: 暫未抓到即時賠率")
@@ -295,22 +487,65 @@ def sync_live_odds_and_ev():
         if not has_win:
             continue
 
+        num_places = 3 if len(horses) >= 7 else 2
         win_implied = np.array([1.0 / max(float(odds_map.get(h["horse_no"], {}).get("win", 20.0) or 20.0), 1.01) for h in horses])
         win_mkt_probs = (win_implied / win_implied.sum()) * 100.0
+        harville_pla_probs = compute_harville_place_probs(win_mkt_probs, num_places=num_places)
 
         has_pla = any(h["horse_no"] in odds_map and (odds_map[h["horse_no"]].get("pla") or 0) > 1.0 for h in horses)
         if has_pla:
             pla_implied = np.array([1.0 / max(float(odds_map.get(h["horse_no"], {}).get("pla", 5.0) or 5.0), 1.01) for h in horses])
-            pla_mkt_probs = (pla_implied / pla_implied.sum()) * 100.0
-            mkt_composite = 0.70 * win_mkt_probs + 0.30 * pla_mkt_probs
+            pla_mkt_probs_300 = (pla_implied / pla_implied.sum()) * (num_places * 100.0)
+            pla_mkt_probs_100 = pla_mkt_probs_300 / float(num_places)
+            mkt_composite = 0.75 * win_mkt_probs + 0.25 * pla_mkt_probs_100
         else:
-            pla_mkt_probs = win_mkt_probs
+            pla_mkt_probs_300 = harville_pla_probs
             mkt_composite = win_mkt_probs
 
-        raw_probs = np.array([float(h.get("win_probability") or 10.0) for h in horses])
-        if raw_probs.sum() > 0:
-            raw_probs = (raw_probs / raw_probs.sum()) * 100.0
-        final_probs = 0.80 * raw_probs + 0.20 * mkt_composite
+        # 讀取基礎勝率並注入最新同日實時賽道偏差 (若該場尚未跑完)
+        base_probs = np.array([float(h.get("win_probability") or 10.0) for h in horses])
+        bias_mults = np.ones(len(horses), dtype=float)
+        new_bias_tags_map = {h["horse_no"]: [] for h in horses}
+
+        if active_bias.get("races", 0) >= 1 and race_no > active_bias.get("races", 0):
+            conf_pct = int(active_bias.get("confidence", 0.38) * 100)
+            dist_front_mult = 1.15 if dist <= 1200 else 1.0
+            dist_closer_mult = 1.15 if dist >= 1400 else 1.0
+
+            for idx_h, h in enumerate(horses):
+                h_no = h["horse_no"]
+                dr = int(h.get("draw") or 7)
+                tags_s = " ".join(str(t) for t in (h.get("smart_tags") or []))
+                is_front = any(k in tags_s for k in ["單騎領放", "前領放頭", "跟前", "先手", "互搶力竭"])
+                is_closer = any(k in tags_s for k in ["後勁", "末段狂追", "慢步速戰略受制", "末段極速"])
+                b_bonus = 0.0
+
+                if not is_st_straight:
+                    if active_bias.get("inside_boost", 0) > 0 and dr <= 6:
+                        b_bonus += active_bias["inside_boost"]
+                        new_bias_tags_map[h_no].append(f"📡 AI實時偏差({conf_pct}%信度): 1-6內中檔利位")
+                    elif active_bias.get("wide_boost", 0) > 0 and dr >= 8:
+                        b_bonus += active_bias["wide_boost"]
+                        new_bias_tags_map[h_no].append(f"📡 AI實時偏差({conf_pct}%信度): 中外疊跑線有利")
+
+                if active_bias.get("front_boost", 0) > 0 and is_front:
+                    b_bonus += round(active_bias["front_boost"] * dist_front_mult, 3)
+                    new_bias_tags_map[h_no].append(f"📡 AI實時偏差({conf_pct}%信度): 場地利前置放頭")
+                elif active_bias.get("closer_boost", 0) > 0 and is_closer:
+                    b_bonus += round(active_bias["closer_boost"] * dist_closer_mult, 3)
+                    new_bias_tags_map[h_no].append(f"📡 AI實時偏差({conf_pct}%信度): 場地利後追衝刺")
+
+                bias_mults[idx_h] = float(np.exp(b_bonus * 1.5))
+
+        adj_raw_probs = base_probs * bias_mults
+        if adj_raw_probs.sum() > 0:
+            adj_raw_probs = (adj_raw_probs / adj_raw_probs.sum()) * 100.0
+
+        # 對數線性概率池化校準 (Log-Linear Opinion Pooling)
+        safe_raw = np.clip(adj_raw_probs, 1e-3, 100.0)
+        safe_mkt = np.clip(mkt_composite, 1e-3, 100.0)
+        log_pooled = (safe_raw ** 0.80) * (safe_mkt ** 0.20)
+        final_probs = (log_pooled / log_pooled.sum()) * 100.0
 
         updated_payload = []
         for i, h in enumerate(horses):
@@ -320,22 +555,29 @@ def sync_live_odds_and_ev():
             pla_odd = odds_info.get("pla")
 
             tags = list(h.get("smart_tags") or [])
-            tags = [t for t in tags if not t.startswith("位置賠率:") and not t.startswith("💎 正期望值") and not t.startswith("📊 建議注碼")]
+            tags = [
+                t for t in tags
+                if not str(t).startswith("位置賠率:")
+                and not str(t).startswith("💎 正期望值")
+                and not str(t).startswith("📊 建議注碼")
+                and "實時偏差" not in str(t)
+            ]
+            tags.extend(new_bias_tags_map.get(h_no, []))
 
             prev_win = h.get("market_odds")
             if win_odd and win_odd > 1.0 and prev_win and float(prev_win) > 1.0:
                 drop_pct = ((float(prev_win) - win_odd) / float(prev_win)) * 100.0
                 if drop_pct >= 20.0:
-                    tags = [t for t in tags if "聰明錢落飛" not in t]
+                    tags = [t for t in tags if "聰明錢落飛" not in str(t)]
                     tags.append(f"🔥 聰明錢落飛 (-{int(drop_pct)}%)")
                 elif drop_pct <= -25.0:
-                    tags = [t for t in tags if "回飛" not in t]
+                    tags = [t for t in tags if "回飛" not in str(t)]
                     tags.append(f"❄️ 資金冷卻回飛 (+{int(abs(drop_pct))}%)")
 
-            w_p = win_mkt_probs[i]
-            p_p = pla_mkt_probs[i]
-            if win_odd and win_odd >= 7.0 and pla_odd and pla_odd > 1.0 and w_p > 0:
-                if (p_p / w_p) >= 1.45 and not any("大戶位置鎖定" in t for t in tags):
+            p_actual = pla_mkt_probs_300[i]
+            p_harville = harville_pla_probs[i]
+            if win_odd and win_odd >= 7.0 and pla_odd and pla_odd > 1.0 and p_harville > 0:
+                if (p_actual / p_harville) >= 1.25 and not any("大戶位置鎖定" in str(t) for t in tags):
                     tags.append("🎯 大戶位置鎖定 (假冷真熱)")
 
             p_model = final_probs[i] / 100.0
@@ -382,7 +624,7 @@ def sync_live_odds_and_ev():
         updated_payload.sort(key=lambda x: x["win_probability"], reverse=True)
         for r_idx, item in enumerate(updated_payload, 1):
             item["predicted_rank"] = r_idx
-            has_smart = any("聰明錢落飛" in t or "大戶位置鎖定" in t for t in item["smart_tags"])
+            has_smart = any("聰明錢落飛" in str(t) or "大戶位置鎖定" in str(t) for t in item["smart_tags"])
             if r_idx <= 4 and item["combo_synergy"] >= 8.0 and has_smart:
                 item["bet_strategy"] = f"👑 終極黃金狙擊 (EV +{item['combo_synergy']}%)"
             elif r_idx == 1:
