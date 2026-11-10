@@ -22,7 +22,7 @@ HEADERS = {
 
 LITERAL_LIVE_ODDS = {}
 
-# 基礎實力底分 (Prior Tier)：差距收窄至 0.68 ~ 0.95，未列出之新客串騎師/練馬師預設給 0.72 (不再打入 0.40 冷宮)
+# 基礎實力底分 (Prior Tier)：差距收窄至 0.68 ~ 0.95，未列出之新客串騎師/練馬師預設給 0.73 / 0.75 (不再打入 0.40 冷宮)
 BASE_JOCKEYS = {
     "潘頓": 0.95, "麥道朗": 0.93, "布文": 0.90, "何澤堯": 0.85,
     "艾兆禮": 0.83, "田泰安": 0.82, "周俊樂": 0.82, "霍宏聲": 0.80,
@@ -43,9 +43,13 @@ BASE_TRAINERS = {
 }
 DEFAULT_TRAINER_PRIOR = 0.75
 
+# 向下相容別名
+ELITE_JOCKEYS = BASE_JOCKEYS
+ELITE_TRAINERS = BASE_TRAINERS
+
 def build_dynamic_jt_stats(sb_client):
     """
-    從 Supabase race_results 自動抓取最近 600 條賽果，
+    從 Supabase race_results 自動抓取最近 800 條賽果，
     用貝氏平滑 (Bayesian Shrinkage) 計算每位騎師、練馬師及騎練配搭的實戰近期熱度！
     """
     j_stats = {}
@@ -98,10 +102,8 @@ def get_fair_jt_score(clean_j, clean_t, j_stats, t_stats, pair_stats):
     j_rec = j_stats.get(clean_j, {"runs": 0, "wins": 0.0, "top3": 0.0})
     j_runs = j_rec["runs"]
     if j_runs > 0:
-        # 標準上名率約 25%，勝率約 8.3%；換算成 0.50~1.00 評分尺
         perf_metric = ((j_rec["wins"] / j_runs) * 3.2) + ((j_rec["top3"] / j_runs) * 1.6)
         j_FormScore = min(0.98, max(0.55, 0.52 + perf_metric * 0.45))
-        # 貝氏權重：跑夠 15 場以上主要由近期實戰決定，新客串騎師(j_runs少)由 Prior 保護
         w_form = j_runs / (j_runs + 12.0)
         j_final = (1.0 - w_form) * j_prior + w_form * j_FormScore
         if j_runs >= 8 and (j_rec["top3"] / j_runs) >= 0.35:
@@ -1206,7 +1208,6 @@ def run_upcoming():
 
     total_races = 0
     sb_master = create_client(SUPABASE_URL, SUPABASE_KEY)
-    # 新增：開跑前自動統計全港騎師、練馬師近期實戰勝率與合拍度
     j_stats_map, t_stats_map, pair_stats_map = build_dynamic_jt_stats(sb_master)
 
     races_meta_cache = {}
