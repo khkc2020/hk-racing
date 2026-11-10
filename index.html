@@ -904,9 +904,17 @@
 
         const filterValidTags = (tags) => {
           if (!tags || !Array.isArray(tags)) return [];
-          if (isCurrentPoolOpen.value) return tags;
+          // 過濾掉內部儲存用的「位置賠率: X倍」文字標籤 (因上方已有藍色位置賠率徽章) 及異常(>99倍)數據
+          let cleaned = tags.filter(t => !String(t).includes('位置賠率:'));
+          // 防止同一匹馬同時出現「聰明錢落飛」與「資金冷卻回飛」矛盾標籤
+          const hasDrop = cleaned.some(t => String(t).includes('聰明錢落飛'));
+          const hasDrift = cleaned.some(t => String(t).includes('資金冷卻回飛'));
+          if (hasDrop && hasDrift) {
+            cleaned = cleaned.filter(t => !String(t).includes('資金冷卻回飛'));
+          }
+          if (isCurrentPoolOpen.value) return cleaned;
           const oddsKeywords = ['聰明錢', '大戶位置', '正期望值', '建議注碼', '位置賠率', '終極黃金狙擊', '回飛'];
-          return tags.filter(t => !oddsKeywords.some(kw => String(t).includes(kw)));
+          return cleaned.filter(t => !oddsKeywords.some(kw => String(t).includes(kw)));
         };
 
         const cleanStrategy = (h) => {
@@ -1007,12 +1015,18 @@
         };
 
         const extractPlace = (h) => {
-          if (h.place_odds) return h.place_odds;
-          if (h.smart_tags) {
+          let pVal = h.place_odds;
+          if (!pVal && h.smart_tags) {
             const t = h.smart_tags.find(x => typeof x === 'string' && x.includes('位置賠率:'));
-            if (t) { const m = t.match(/(\d+(\.\d+)?)/); if (m) return m[1]; }
+            if (t) { const m = t.match(/(\d+(\.\d+)?)/); if (m) pVal = parseFloat(m[1]); }
           }
-          return null;
+          const pNum = parseFloat(pVal);
+          const wNum = parseFloat(h.market_odds);
+          if (!pNum || pNum <= 1.0 || pNum >= 99.0) return null;
+          // 防護網：位置賠率不可能高於獨贏賠率，亦不可能無獨贏卻出現 115~135 磅之負磅假數字
+          if (wNum && wNum >= 1.5 && pNum > wNum) return null;
+          if (!wNum && pNum >= 35.0) return null;
+          return pNum;
         };
 
         const getTagClass = (tag) => {
