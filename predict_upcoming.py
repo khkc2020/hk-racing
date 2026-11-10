@@ -428,9 +428,12 @@ def evaluate_trackwork(text, jockey_name, target_date_str=None, last_race_date_s
                 tags.append(f"⚠️ 走勢評語: {kw}")
                 break
 
-    gallops = re.findall(r"(\d{2})/(\d{2})[:\s]+.*?(?:沙田|從化|跑馬地|全天候|草地|泥地|快跳|拍跳|踱步).*?(\d{2}\.\d)?\s*(?:\((.*?)\))?", text)
+    # 僅統計真正的快跳/拍跳或有分段秒數紀錄之操練，排除每日例行「踱步」導致課數暴增至30~40課
+    gallops = re.findall(r"(\d{2})/(\d{2})[:\s]+([^\n]*?(?:快跳|拍跳|\b2[1-9]\.\d\b)[^\n]*)", text)
     recent_gallops = 0
-    for d_str, m_str, sec, rider in gallops:
+    for d_str, m_str, g_line in gallops:
+        if "踱步" in g_line and not re.search(r"\b2[1-9]\.\d\b", g_line):
+            continue
         try:
             d_i, m_i = int(d_str), int(m_str)
             y_i = ref_year if target_dt.month >= m_i else ref_year - 1
@@ -439,7 +442,7 @@ def evaluate_trackwork(text, jockey_name, target_date_str=None, last_race_date_s
                 continue
             if 0 <= (target_dt - g_dt).days <= 28:
                 recent_gallops += 1
-                if clean_j and rider and clean_j in rider and not any("騎師親自" in t for t in tags):
+                if clean_j and clean_j in g_line and not any("騎師親自" in t for t in tags):
                     score += 0.10
                     tags.append(f"🏇 賽前騎師親自快跳 ({clean_j})")
         except Exception:
@@ -779,6 +782,26 @@ def detect_upcoming_meeting():
 
     return "2026-10-01", "2026/10/01", "ST"
 
+def sanitize_wp_odds(win_val, pla_val):
+    """
+    嚴格驗證獨贏與位置賠率合理性：
+    1. 獨贏必須在 1.01 ~ 999.0 之間
+    2. 位置必須在 1.01 ~ 99.0 之間，且位置賠率不可大於獨贏賠率 (防止 128磅 負磅混入位置賠率)
+    """
+    try:
+        w = float(win_val) if (win_val is not None and 1.01 <= float(win_val) <= 999.0) else None
+    except Exception:
+        w = None
+    try:
+        p = float(pla_val) if (pla_val is not None and 1.01 <= float(pla_val) <= 99.0) else None
+    except Exception:
+        p = None
+    if w and p and p > w and w >= 1.5:
+        p = None
+    if w is None and p is not None and p >= 35.0:
+        p = None
+    return w, p
+
 def fetch_odds_via_selenium(target_date, venue, race_no):
     odds_map = {}
     driver = get_shared_selenium_driver()
@@ -795,34 +818,49 @@ def fetch_odds_via_selenium(target_date, venue, race_no):
 
         wait = WebDriverWait(driver, 6)
         wait.until(EC.presence_of_element_located((By.TAG_NAME, "table")))
-        time.sleep(1.5)
+        time.sleep(2.0)
 
         soup = BeautifulSoup(driver.page_source, "html.parser")
-        for tr in soup.find_all("tr"):
-            tds = [td.get_text(strip=True) for td in tr.find_all(["td", "th"])]
-            if not tds:
+        for tb in soup.find_all("table"):
+            header_txt = tb.get_text()
+            if "獨贏" not in header_txt and "位置" not in header_txt:
                 continue
-            h_no_val = None
-            if tds[0].isdigit():
+
+            first_tr = tb.find("tr")
+            headers = [th.get_text(strip=True) for th in first_tr.find_all(["th", "td"])] if first_tr else []
+            win_idx = next((i for i, h in enumerate(headers) if "獨贏" in h or h.upper() == "WIN"), None)
+            pla_idx = next((i for i, h in enumerate(headers) if "位置" in h or h.upper() in ("PLA", "PLACE")), None)
+
+            for tr in tb.find_all("tr")[1:]:
+                tds = [td.get_text(strip=True) for td in tr.find_all(["td", "th"])]
+                if len(tds) < 3 or not tds[0].isdigit():
+                    continue
                 h_no_val = int(tds[0])
-            
-            if h_no_val and 1 <= h_no_val <= 14:
-                nums = []
-                for x in tds[1:]:
-                    clean_x = re.sub(r"[^\d.]", "", x)
-                    if re.match(r'^\d+(\.\d+)?$', clean_x):
-                        val = float(clean_x)
-                        if 1.0 <= val <= 999.0:
-                            nums.append(val)
-                if nums:
-                    win_val = nums[0] if len(nums) == 1 else nums[-2] if len(nums) >= 2 else None
-                    pla_val = nums[-1] if len(nums) >= 2 else None
-                    odds_map[h_no_val] = {
-                        "win": win_val,
-                        "pla": pla_val
-                    }
+                if not (1 <= h_no_val <= 14):
+                    continue
+
+                win_val, pla_val = None, None
+                if win_idx is not None and len(tds) > win_idx:
+                    m_w = re.match(r'^(\d+(?:\.\d+)?)$', tds[win_idx].strip())
+                    if m_w: win_val = float(m_w.group(1))
+                if pla_idx is not None and len(tds) > pla_idx:
+                    m_p = re.match(r'^(\d+(?:\.\d+)?)$', tds[pla_idx].strip())
+                    if m_p: pla_val = float(m_p.group(1))
+
+                # 僅檢查最後兩個儲存格且必須是純數字/小數(絕不剝離括號把騎師 -2/-7 減磅或 128磅 當成賠率)
+                if win_val is None and pla_val is None and len(tds) >= 2:
+                    last_two = tds[-2:]
+                    m1 = re.match(r'^(\d+(?:\.\d+)?)$', last_two[0].strip())
+                    m2 = re.match(r'^(\d+(?:\.\d+)?)$', last_two[1].strip())
+                    if m1 and m2:
+                        win_val, pla_val = float(m1.group(1)), float(m2.group(1))
+
+                w_clean, p_clean = sanitize_wp_odds(win_val, pla_val)
+                if w_clean and p_clean:
+                    odds_map[h_no_val] = {"win": w_clean, "pla": p_clean}
+
         if odds_map:
-            print(f"  [Selenium] 第 {race_no} 場動態抓取成功: 共 {len(odds_map)} 匹馬 (含獨贏與位置賠率)")
+            print(f"  [Selenium] 第 {race_no} 場動態抓取成功: 共 {len(odds_map)} 匹馬 (含防污染驗證)")
             return odds_map
     except Exception as e:
         print(f"  [Selenium] 抓取提示: {e}，將切換至字面備用賠率機制")
@@ -899,14 +937,15 @@ def fetch_live_odds(race_no, target_date="2026-10-07", venue="HV"):
                 soup = BeautifulSoup("", "html.parser")
             for tr in soup.find_all("tr"):
                 tds = [td.get_text(strip=True) for td in tr.find_all(["td", "th"])]
-                if tds and tds[0].isdigit():
+                if len(tds) >= 4 and tds[0].isdigit():
                     h_no = int(tds[0])
-                    nums = [float(x) for x in tds[2:] if re.match(r"^\d+(\.\d+)?$", x)]
-                    if nums:
-                        win_odd = nums[-2] if (len(nums) >= 2 and len(nums) % 2 == 0) else nums[-1]
-                        pla_odd = nums[-1] if (len(nums) >= 2 and len(nums) % 2 == 0) else None
-                        if 1.0 <= win_odd <= 999.0:
-                            odds_map[h_no] = {"win": win_odd, "pla": pla_odd}
+                    last_two = tds[-2:]
+                    m1 = re.match(r"^\d+(\.\d+)?$", last_two[0].strip())
+                    m2 = re.match(r"^\d+(\.\d+)?$", last_two[1].strip())
+                    if m1 and m2:
+                        w_clean, p_clean = sanitize_wp_odds(float(m1.group(0)), float(m2.group(0)))
+                        if w_clean and p_clean:
+                            odds_map[h_no] = {"win": w_clean, "pla": p_clean}
             if odds_map:
                 print(f"  [東網即時盤] 第 {race_no} 場抓取成功: 共 {len(odds_map)} 匹馬")
                 return odds_map
@@ -968,7 +1007,7 @@ def fetch_race_horses(date_hkjc, venue, race_no):
                 h_idx["draw"] = i
             elif "練馬師" in h and "trainer" not in h_idx:
                 h_idx["trainer"] = i
-            elif "評分" in h and "+/-" not in h and "rating" not in h_idx:
+            elif "評分" in h and "rating" not in h_idx:
                 h_idx["rating"] = i
             elif "配備" in h and "gear" not in h_idx:
                 h_idx["gear"] = i
@@ -1250,11 +1289,17 @@ def run_upcoming():
                         if "位置賠率:" in str(t):
                             m_p = re.search(r"(\d+(?:\.\d+)?)", str(t))
                             if m_p: p_val = float(m_p.group(1))
-                    prev_odds_map[h_no_val] = {
-                        "win": float(w_val),
-                        "pla": p_val
-                    }
-                    prev_tags_map[h_no_val] = t_val if isinstance(t_val, list) else []
+                    w_clean, p_clean = sanitize_wp_odds(w_val, p_val)
+                    # 只有同時具備合法獨贏與位置賠率(非未開盤AI公允賠率或污染數據)，才納入歷史賠率比較基準
+                    if w_clean and p_clean:
+                        prev_odds_map[h_no_val] = {
+                            "win": w_clean,
+                            "pla": p_clean
+                        }
+                        prev_tags_map[h_no_val] = [
+                            x for x in (t_val if isinstance(t_val, list) else [])
+                            if not ("資金冷卻回飛" in str(x) and any("聰明錢落飛" in str(y) for y in t_val))
+                        ]
         except Exception:
             pass
 
@@ -1726,6 +1771,7 @@ def run_upcoming():
                 "horse_name": item["horse_name"],
                 "draw": item["draw"],
                 "jockey": item["jockey"],
+                "weight": item["weight"],
                 "win_probability": item["win_probability"],
                 "predicted_rank": rank,
                 "is_value_bet": item["is_value_bet"] or (rank <= 3),
@@ -1748,7 +1794,7 @@ def run_upcoming():
                 c.table("race_predictions").insert(clean_payload).execute()
             except Exception as e:
                 err_s = str(e)
-                for opt_col in ["fast_gallop_count", "rest_days", "market_odds"]:
+                for opt_col in ["fast_gallop_count", "rest_days", "market_odds", "weight"]:
                     if opt_col in err_s:
                         clean_payload = [{k: v for k, v in row.items() if k != opt_col} for row in clean_payload]
                 c.table("race_predictions").insert(clean_payload).execute()
