@@ -22,17 +22,120 @@ HEADERS = {
 
 LITERAL_LIVE_ODDS = {}
 
-ELITE_JOCKEYS = {
-    "潘頓": 1.00, "麥道朗": 0.95, "布文": 0.92, "何澤堯": 0.88, 
-    "田泰安": 0.82, "艾兆禮": 0.82, "霍宏聲": 0.78, "巴度": 0.72,
-    "蔡明紹": 0.70, "班德禮": 0.70, "梁家俊": 0.68
+# 基礎實力底分 (Prior Tier)：差距收窄至 0.68 ~ 0.95，未列出之新客串騎師/練馬師預設給 0.72 (不再打入 0.40 冷宮)
+BASE_JOCKEYS = {
+    "潘頓": 0.95, "麥道朗": 0.93, "布文": 0.90, "何澤堯": 0.85,
+    "艾兆禮": 0.83, "田泰安": 0.82, "周俊樂": 0.82, "霍宏聲": 0.80,
+    "艾道拿": 0.79, "巴度": 0.78, "蔡明紹": 0.77, "梁家俊": 0.76,
+    "班德禮": 0.76, "希威森": 0.75, "潘明輝": 0.75, "鍾易禮": 0.74,
+    "奧璇壁": 0.76, "楊明綸": 0.72, "賀銘年": 0.72, "湯普新": 0.72,
+    "巫顯東": 0.70, "陳嘉熙": 0.68, "黃智弘": 0.73, "黃寶妮": 0.70
 }
+DEFAULT_JOCKEY_PRIOR = 0.73  # 短期客串新騎師(如冬季外援)預設給中堅偏高底分
 
-ELITE_TRAINERS = {
-    "蔡約翰": 0.92, "方嘉柏": 0.88, "沈集成": 0.88, "呂健威": 0.86,
-    "告東尼": 0.84, "廖康銘": 0.84, "伍鵬志": 0.85, "姚本輝": 0.80,
-    "文家良": 0.78, "賀賢": 0.76, "羅富全": 0.78
+BASE_TRAINERS = {
+    "蔡約翰": 0.90, "伍鵬志": 0.88, "呂健威": 0.87, "方嘉柏": 0.86,
+    "沈集成": 0.86, "廖康銘": 0.85, "告東尼": 0.84, "大衛希斯": 0.84,
+    "姚本輝": 0.83, "羅富全": 0.81, "蘇偉賢": 0.80, "巫偉傑": 0.80,
+    "游達榮": 0.79, "葉楚航": 0.78, "文家良": 0.78, "賀賢": 0.78,
+    "韋達": 0.77, "黎昭昇": 0.76, "容天鵬": 0.75, "徐雨石": 0.74,
+    "丁冠豪": 0.74, "鄭俊偉": 0.73
 }
+DEFAULT_TRAINER_PRIOR = 0.75
+
+def build_dynamic_jt_stats(sb_client):
+    """
+    從 Supabase race_results 自動抓取最近 600 條賽果，
+    用貝氏平滑 (Bayesian Shrinkage) 計算每位騎師、練馬師及騎練配搭的實戰近期熱度！
+    """
+    j_stats = {}
+    t_stats = {}
+    pair_stats = {}
+    try:
+        if not sb_client:
+            return j_stats, t_stats, pair_stats
+        res = sb_client.table("race_results").select("jockey, trainer, place_num, placing").order("race_id", desc=True).limit(800).execute()
+        for row in (res.data or []):
+            raw_j = str(row.get("jockey") or "")
+            clean_j = re.sub(r"\s*\(.*?\)", "", raw_j).strip()
+            clean_t = str(row.get("trainer") or "").strip()
+            pl_raw = row.get("place_num") if row.get("place_num") is not None else row.get("placing")
+            try:
+                pl = int(str(pl_raw).strip())
+            except Exception:
+                continue
+
+            is_win = 1.0 if pl == 1 else 0.0
+            is_top3 = 1.0 if 1 <= pl <= 3 else 0.0
+
+            if clean_j:
+                st = j_stats.setdefault(clean_j, {"runs": 0, "wins": 0.0, "top3": 0.0})
+                st["runs"] += 1
+                st["wins"] += is_win
+                st["top3"] += is_top3
+            if clean_t:
+                st = t_stats.setdefault(clean_t, {"runs": 0, "wins": 0.0, "top3": 0.0})
+                st["runs"] += 1
+                st["wins"] += is_win
+                st["top3"] += is_top3
+            if clean_j and clean_t:
+                pk = f"{clean_j}_{clean_t}"
+                st = pair_stats.setdefault(pk, {"runs": 0, "wins": 0.0, "top3": 0.0})
+                st["runs"] += 1
+                st["wins"] += is_win
+                st["top3"] += is_top3
+    except Exception as e:
+        print(f"  [提示] 動態騎練數據計算略過: {e}")
+    return j_stats, t_stats, pair_stats
+
+def get_fair_jt_score(clean_j, clean_t, j_stats, t_stats, pair_stats):
+    """
+    融合「基礎底分(45%) + 近期實戰勝率/上名率(55%) + 騎練合拍度」
+    """
+    tags = []
+    # 1. 騎師分數 (貝氏平滑 K=12 場)
+    j_prior = BASE_JOCKEYS.get(clean_j, DEFAULT_JOCKEY_PRIOR)
+    j_rec = j_stats.get(clean_j, {"runs": 0, "wins": 0.0, "top3": 0.0})
+    j_runs = j_rec["runs"]
+    if j_runs > 0:
+        # 標準上名率約 25%，勝率約 8.3%；換算成 0.50~1.00 評分尺
+        perf_metric = ((j_rec["wins"] / j_runs) * 3.2) + ((j_rec["top3"] / j_runs) * 1.6)
+        j_FormScore = min(0.98, max(0.55, 0.52 + perf_metric * 0.45))
+        # 貝氏權重：跑夠 15 場以上主要由近期實戰決定，新客串騎師(j_runs少)由 Prior 保護
+        w_form = j_runs / (j_runs + 12.0)
+        j_final = (1.0 - w_form) * j_prior + w_form * j_FormScore
+        if j_runs >= 8 and (j_rec["top3"] / j_runs) >= 0.35:
+            tags.append(f"🔥 騎師近期手風大順 ({clean_j})")
+    else:
+        j_final = j_prior
+        if clean_j and clean_j not in BASE_JOCKEYS:
+            tags.append(f"🌍 生力軍/客串騎師 ({clean_j})")
+
+    # 2. 練馬師分數 (貝氏平滑 K=15 場)
+    t_prior = BASE_TRAINERS.get(clean_t, DEFAULT_TRAINER_PRIOR)
+    t_rec = t_stats.get(clean_t, {"runs": 0, "wins": 0.0, "top3": 0.0})
+    t_runs = t_rec["runs"]
+    if t_runs > 0:
+        t_metric = ((t_rec["wins"] / t_runs) * 3.2) + ((t_rec["top3"] / t_runs) * 1.6)
+        t_FormScore = min(0.96, max(0.55, 0.52 + t_metric * 0.45))
+        w_t_form = t_runs / (t_runs + 15.0)
+        t_final = (1.0 - w_t_form) * t_prior + w_t_form * t_FormScore
+        if t_runs >= 10 and (t_rec["top3"] / t_runs) >= 0.33:
+            tags.append(f"🏠 馬房近期攻勢凌厲 ({clean_t})")
+    else:
+        t_final = t_prior
+
+    # 3. 騎練合拍加成
+    synergy_bonus = 0.0
+    if clean_j and clean_t:
+        pk = f"{clean_j}_{clean_t}"
+        p_rec = pair_stats.get(pk, {"runs": 0, "wins": 0.0, "top3": 0.0})
+        if p_rec["runs"] >= 4 and (p_rec["top3"] / p_rec["runs"]) >= 0.40:
+            synergy_bonus = 0.08
+            tags.append(f"🤝 騎練王牌合拍 ({clean_j}+{clean_t})")
+
+    jt_score = ((j_final * 0.60 + t_final * 0.40) - 0.72) + synergy_bonus
+    return jt_score, tags
 
 _SHARED_SELENIUM_DRIVER = None
 
@@ -613,9 +716,11 @@ def evaluate_form_and_transition(horse_code, curr_meta, curr_horse, form_str, av
             last_j = re.sub(r"\s*\(.*?\)", "", last.get("jockey", "")).strip()
             curr_j = re.sub(r"\s*\(.*?\)", "", curr_horse.get("jockey", "")).strip()
             if last_j and curr_j and last_j != curr_j:
-                if curr_j in ["潘頓", "艾兆禮", "何澤堯", "布文", "巴度", "麥道朗"]:
-                    score += 0.15
-                    tags.append(f"⭐ 換強配大師傅 ({curr_j})")
+                curr_j_score = BASE_JOCKEYS.get(curr_j, DEFAULT_JOCKEY_PRIOR)
+                last_j_score = BASE_JOCKEYS.get(last_j, DEFAULT_JOCKEY_PRIOR)
+                if curr_j_score >= 0.80 and curr_j_score > last_j_score:
+                    score += 0.14
+                    tags.append(f"⭐ 換強配騎師 ({last_j} ➔ {curr_j})")
                 elif re.search(r"\(-(\d+)\)", curr_horse.get("jockey", "")):
                     claim = re.search(r"\(-(\d+)\)", curr_horse.get("jockey", "")).group(1)
                     score += 0.12
@@ -1101,6 +1206,8 @@ def run_upcoming():
 
     total_races = 0
     sb_master = create_client(SUPABASE_URL, SUPABASE_KEY)
+    # 新增：開跑前自動統計全港騎師、練馬師近期實戰勝率與合拍度
+    j_stats_map, t_stats_map, pair_stats_map = build_dynamic_jt_stats(sb_master)
 
     races_meta_cache = {}
     try:
@@ -1299,17 +1406,21 @@ def run_upcoming():
 
             clean_j = re.sub(r"\s*\(.*?\)", "", h["jockey"]).strip()
             clean_t = h.get("trainer", "").strip()
-            j_tier = ELITE_JOCKEYS.get(clean_j, 0.40)
-            t_tier = ELITE_TRAINERS.get(clean_t, 0.45)
-            jt_tier_score = (j_tier * 0.65 + t_tier * 0.35) - 0.50
+            jt_tier_score, jt_dyn_tags = get_fair_jt_score(clean_j, clean_t, j_stats_map, t_stats_map, pair_stats_map)
+            h_tags.extend(jt_dyn_tags)
 
             loyalty_bonus = 0.0
             past_rec = horse_past_cache.get(h_no)
             if past_rec and clean_j:
                 last_j = re.sub(r"\s*\(.*?\)", "", str(past_rec.get("jockey") or "")).strip()
-                if last_j == clean_j and clean_j in ELITE_JOCKEYS:
-                    loyalty_bonus = 0.12
-                    h_tags.append("🤝 王牌原庄配搭連騎")
+                try:
+                    last_pl_val = int(str(past_rec.get("place_num") or past_rec.get("placing") or 99).strip())
+                except Exception:
+                    last_pl_val = 99
+                # 公平化：不論任何騎師，只要上仗跑入前5名且今仗原庄配搭連騎，一律給予連騎默契加分！
+                if last_j == clean_j and (last_pl_val <= 5 or BASE_JOCKEYS.get(clean_j, 0.73) >= 0.80):
+                    loyalty_bonus = 0.10
+                    h_tags.append(f"🤝 原庄配搭連騎 ({clean_j})")
 
             pillar_3 = w_score * 0.40 + (claim_bonus + home_bonus) * 0.25 + (jt_tier_score + loyalty_bonus) * 0.35
 
