@@ -270,6 +270,7 @@ def fetch_racecard_updates(target_date, venue, race_no):
                 elif "騎師" in h and "jk" not in h_idx: h_idx["jk"] = i
                 elif "練馬師" in h and "tr" not in h_idx: h_idx["tr"] = i
                 elif "檔位" in h and "dr" not in h_idx: h_idx["dr"] = i
+                elif "評分" in h and "rt" not in h_idx: h_idx["rt"] = i
             if "no" not in h_idx or "name" not in h_idx:
                 continue
             for tr in tb.find_all("tr")[1:]:
@@ -283,15 +284,45 @@ def fetch_racecard_updates(target_date, venue, race_no):
                     continue
                 jk = tds[h_idx["jk"]] if "jk" in h_idx and len(tds) > h_idx["jk"] else ""
                 tr_name = tds[h_idx["tr"]] if "tr" in h_idx and len(tds) > h_idx["tr"] else ""
+                wt_val = None
+                if "wt" in h_idx and len(tds) > h_idx["wt"]:
+                    m_w = re.search(r"\d+", tds[h_idx["wt"]])
+                    if m_w: wt_val = int(m_w.group(0))
+                rt_val = None
+                if "rt" in h_idx and len(tds) > h_idx["rt"]:
+                    m_r = re.search(r"\d+", tds[h_idx["rt"]])
+                    if m_r: rt_val = int(m_r.group(0))
                 active_horses[h_no] = {
-                    "jockey": f"{jk} / {tr_name}" if tr_name else jk
+                    "jockey": f"{jk} / {tr_name}" if tr_name else jk,
+                    "weight": wt_val,
+                    "rating": rt_val
                 }
     except Exception:
         pass
     return active_horses, scratched_nos
 
+def sanitize_wp_odds(win_val, pla_val):
+    """
+    嚴格驗證獨贏與位置賠率合理性：
+    1. 獨贏必須在 1.01 ~ 999.0 之間
+    2. 位置必須在 1.01 ~ 99.0 之間，且位置賠率不可大於獨贏賠率 (防止 128磅 負磅混入位置賠率)
+    """
+    try:
+        w = float(win_val) if (win_val is not None and 1.01 <= float(win_val) <= 999.0) else None
+    except Exception:
+        w = None
+    try:
+        p = float(pla_val) if (pla_val is not None and 1.01 <= float(pla_val) <= 99.0) else None
+    except Exception:
+        p = None
+    if w and p and p > w and w >= 1.5:
+        p = None
+    if w is None and p is not None and p >= 35.0:
+        p = None
+    return w, p
+
 def fetch_live_odds_fast(target_date, venue, race_no):
-    """三層極速賠率通道 (具備嚴格賽日核對，未開盤絕不誤抓舊盤)"""
+    """三層極速賠率通道 (具備嚴格賽日核對與防負磅/減磅污染濾網)"""
     odds_map = {}
     if not is_odds_pool_open(target_date):
         return odds_map
@@ -315,14 +346,15 @@ def fetch_live_odds_fast(target_date, venue, race_no):
                             if vals:
                                 win_val = vals[0]
                                 pla_val = vals[1] if len(vals) >= 2 else None
-                                if 1.0 <= win_val <= 999.0:
-                                    odds_map[h_no] = {"win": win_val, "pla": pla_val}
+                                w_clean, p_clean = sanitize_wp_odds(win_val, pla_val)
+                                if w_clean:
+                                    odds_map[h_no] = {"win": w_clean, "pla": p_clean}
                 if odds_map:
                     return odds_map
         except Exception:
             pass
 
-    # 2. 東網即時盤鏡像 (必須核對頁面日期與 target_date 一致！)
+    # 2. 東網即時盤鏡像 (必須核對頁面日期與 target_date 一致，且只讀最尾兩欄純數字)
     url_oncc = f"https://racing.on.cc/racing/rat/current/rjratb{race_no:04d}x0.html"
     try:
         r = requests.get(url_oncc, headers=HEADERS, timeout=3.5)
@@ -342,38 +374,61 @@ def fetch_live_odds_fast(target_date, venue, race_no):
             if valid_date:
                 for tr in soup.find_all("tr"):
                     tds = [td.get_text(strip=True) for td in tr.find_all(["td", "th"])]
-                    if tds and tds[0].isdigit():
+                    if len(tds) >= 4 and tds[0].isdigit():
                         h_no = int(tds[0])
-                        nums = [float(x) for x in tds[2:] if re.match(r"^\d+(\.\d+)?$", x)]
-                        if nums:
-                            win_odd = nums[-2] if (len(nums) >= 2 and len(nums) % 2 == 0) else nums[-1]
-                            pla_odd = nums[-1] if (len(nums) >= 2 and len(nums) % 2 == 0) else None
-                            if 1.0 <= win_odd <= 999.0:
-                                odds_map[h_no] = {"win": win_odd, "pla": pla_odd}
+                        last_two = tds[-2:]
+                        m1 = re.match(r"^\d+(\.\d+)?$", last_two[0].strip())
+                        m2 = re.match(r"^\d+(\.\d+)?$", last_two[1].strip())
+                        if m1 and m2:
+                            w_clean, p_clean = sanitize_wp_odds(float(m1.group(0)), float(m2.group(0)))
+                            if w_clean and p_clean:
+                                odds_map[h_no] = {"win": w_clean, "pla": p_clean}
                 if odds_map:
                     return odds_map
     except Exception:
         pass
 
-    # 3. Selenium 單例共用視窗 (僅在已開盤時啟用)
+    # 3. Selenium 單例共用視窗 (精準定位獨贏與位置欄，絕不把騎師 -2/-7 減磅或 128磅 當成賠率)
     driver = get_shared_driver()
     if driver:
         try:
             url = f"https://bet.hkjc.com/ch/racing/wp/{target_date}/{venue}/{race_no}"
             driver.set_page_load_timeout(10)
             driver.get(url)
-            time.sleep(1.2)
+            time.sleep(1.8)
             soup = BeautifulSoup(driver.page_source, "html.parser")
-            for tr in soup.find_all("tr"):
-                tds = [td.get_text(strip=True) for td in tr.find_all(["td", "th"])]
-                if tds and tds[0].isdigit():
+            for tb in soup.find_all("table"):
+                header_txt = tb.get_text()
+                if "獨贏" not in header_txt and "位置" not in header_txt:
+                    continue
+                first_tr = tb.find("tr")
+                headers = [th.get_text(strip=True) for th in first_tr.find_all(["th", "td"])] if first_tr else []
+                win_idx = next((i for i, h in enumerate(headers) if "獨贏" in h or h.upper() == "WIN"), None)
+                pla_idx = next((i for i, h in enumerate(headers) if "位置" in h or h.upper() in ("PLA", "PLACE")), None)
+
+                for tr in tb.find_all("tr")[1:]:
+                    tds = [td.get_text(strip=True) for td in tr.find_all(["td", "th"])]
+                    if len(tds) < 3 or not tds[0].isdigit():
+                        continue
                     h_no = int(tds[0])
-                    nums = [float(re.sub(r"[^\d.]", "", x)) for x in tds[1:] if re.match(r"^\d+(\.\d+)?$", re.sub(r"[^\d.]", "", x))]
-                    if nums:
-                        win_val = nums[0] if len(nums) == 1 else nums[-2] if len(nums) >= 2 else None
-                        pla_val = nums[-1] if len(nums) >= 2 else None
-                        if win_val and 1.0 <= win_val <= 999.0:
-                            odds_map[h_no] = {"win": win_val, "pla": pla_val}
+                    if not (1 <= h_no <= 14):
+                        continue
+                    win_val, pla_val = None, None
+                    if win_idx is not None and len(tds) > win_idx:
+                        m_w = re.match(r'^(\d+(?:\.\d+)?)$', tds[win_idx].strip())
+                        if m_w: win_val = float(m_w.group(1))
+                    if pla_idx is not None and len(tds) > pla_idx:
+                        m_p = re.match(r'^(\d+(?:\.\d+)?)$', tds[pla_idx].strip())
+                        if m_p: pla_val = float(m_p.group(1))
+                    if win_val is None and pla_val is None and len(tds) >= 2:
+                        last_two = tds[-2:]
+                        m1 = re.match(r'^(\d+(?:\.\d+)?)$', last_two[0].strip())
+                        m2 = re.match(r'^(\d+(?:\.\d+)?)$', last_two[1].strip())
+                        if m1 and m2:
+                            win_val, pla_val = float(m1.group(1)), float(m2.group(1))
+                    w_clean, p_clean = sanitize_wp_odds(win_val, pla_val)
+                    if w_clean and p_clean:
+                        odds_map[h_no] = {"win": w_clean, "pla": p_clean}
         except Exception:
             pass
 
@@ -431,8 +486,14 @@ def sync_live_odds_and_ev():
             horses = [h for h in horses if h["horse_no"] not in scratched_nos]
 
         for h in horses:
-            if h["horse_no"] in active_rc and active_rc[h["horse_no"]].get("jockey"):
-                h["jockey"] = active_rc[h["horse_no"]]["jockey"]
+            if h["horse_no"] in active_rc:
+                rc_info = active_rc[h["horse_no"]]
+                if rc_info.get("jockey"):
+                    h["jockey"] = rc_info["jockey"]
+                if rc_info.get("weight"):
+                    h["weight"] = rc_info["weight"]
+                if rc_info.get("rating"):
+                    h["rating"] = rc_info["rating"]
 
         # 2. 若尚未開盤：清除誤存的舊賠率與假聰明錢標籤，重新歸一化勝率後入庫
         if not pool_open:
@@ -455,6 +516,7 @@ def sync_live_odds_and_ev():
                     "horse_name": h["horse_name"],
                     "draw": h["draw"],
                     "jockey": h["jockey"],
+                    "weight": h.get("weight", 125),
                     "win_probability": w_p_val,
                     "predicted_rank": i + 1,
                     "is_value_bet": (i < 3),
@@ -564,15 +626,28 @@ def sync_live_odds_and_ev():
             ]
             tags.extend(new_bias_tags_map.get(h_no, []))
 
-            prev_win = h.get("market_odds")
-            if win_odd and win_odd > 1.0 and prev_win and float(prev_win) > 1.0:
-                drop_pct = ((float(prev_win) - win_odd) / float(prev_win)) * 100.0
+            # 檢查舊標籤中是否曾有真實位置賠率 (確保不會拿未開盤的 AI 公允賠率或污染數字來計落飛)
+            old_raw_tags = list(h.get("smart_tags") or [])
+            old_pla = None
+            for ot in old_raw_tags:
+                if "位置賠率:" in str(ot):
+                    m_op = re.search(r"(\d+(?:\.\d+)?)", str(ot))
+                    if m_op: old_pla = float(m_op.group(1))
+            prev_win_clean, prev_pla_clean = sanitize_wp_odds(h.get("market_odds"), old_pla)
+
+            if win_odd and win_odd > 1.0 and prev_win_clean and prev_pla_clean:
+                drop_pct = ((prev_win_clean - win_odd) / prev_win_clean) * 100.0
                 if drop_pct >= 20.0:
-                    tags = [t for t in tags if "聰明錢落飛" not in str(t)]
+                    # 落飛時同時清除舊的落飛與回飛標籤，杜絕同時出現「落飛」與「回飛」矛盾標籤
+                    tags = [t for t in tags if "聰明錢落飛" not in str(t) and "資金冷卻回飛" not in str(t)]
                     tags.append(f"🔥 聰明錢落飛 (-{int(drop_pct)}%)")
                 elif drop_pct <= -25.0:
-                    tags = [t for t in tags if "回飛" not in str(t)]
+                    tags = [t for t in tags if "聰明錢落飛" not in str(t) and "資金冷卻回飛" not in str(t)]
                     tags.append(f"❄️ 資金冷卻回飛 (+{int(abs(drop_pct))}%)")
+            else:
+                # 若過往標籤同時混有落飛與回飛，或舊賠率被污染，強制清理矛盾回飛標籤
+                if any("聰明錢落飛" in str(t) for t in tags) and any("資金冷卻回飛" in str(t) for t in tags):
+                    tags = [t for t in tags if "資金冷卻回飛" not in str(t)]
 
             p_actual = pla_mkt_probs_300[i]
             p_harville = harville_pla_probs[i]
@@ -580,14 +655,16 @@ def sync_live_odds_and_ev():
                 if (p_actual / p_harville) >= 1.25 and not any("大戶位置鎖定" in str(t) for t in tags):
                     tags.append("🎯 大戶位置鎖定 (假冷真熱)")
 
+            # 使用未摻入市場賠率水位的 adj_raw_probs 計算 EV (85% 基本面 + 15% 綜合)，防止雙重計算 (Double Counting)
+            p_ev_model = (0.85 * adj_raw_probs[i] + 0.15 * final_probs[i]) / 100.0
             p_model = final_probs[i] / 100.0
             ev_pct = 0.0
             is_val = False
             if win_odd and win_odd > 1.0:
-                ev = (p_model * win_odd) - 1.0
+                ev = (p_ev_model * win_odd) - 1.0
                 ev_pct = round(ev * 100.0, 1)
                 if ev >= 0.08:
-                    if win_odd <= 25.0 or p_model >= 0.04:
+                    if win_odd <= 25.0 or p_ev_model >= 0.04:
                         is_val = True
                         b = win_odd - 1.0
                         k = round(min(5.0, max(0.5, (ev / (4.0 * b)) * 100.0)), 1)
@@ -608,6 +685,7 @@ def sync_live_odds_and_ev():
                 "horse_name": h["horse_name"],
                 "draw": h["draw"],
                 "jockey": h["jockey"],
+                "weight": h.get("weight", 125),
                 "win_probability": safe_prob,
                 "predicted_rank": h.get("predicted_rank", 99),
                 "is_value_bet": is_val or h.get("predicted_rank", 99) <= 3,
@@ -635,10 +713,19 @@ def sync_live_odds_and_ev():
                 item["bet_strategy"] = "🛡️ 連贏配腳 / 高爆發冷門"
             elif item["is_value_bet"]:
                 item["bet_strategy"] = f"💎 價值突擊 (EV +{item['combo_synergy']}%)"
+            else:
+                item["bet_strategy"] = ""
 
         sb.table("race_predictions").delete().eq("race_id", race_id).execute()
         clean_insert = [{k: v for k, v in row.items() if k != "place_odds"} for row in updated_payload]
-        sb.table("race_predictions").insert(clean_insert).execute()
+        try:
+            sb.table("race_predictions").insert(clean_insert).execute()
+        except Exception as e:
+            err_s = str(e)
+            for opt_col in ["fast_gallop_count", "rest_days", "market_odds", "weight"]:
+                if opt_col in err_s:
+                    clean_insert = [{k: v for k, v in row.items() if k != opt_col} for row in clean_insert]
+            sb.table("race_predictions").insert(clean_insert).execute()
         
         top1 = updated_payload[0]
         total_updated_horses += len(updated_payload)
