@@ -890,15 +890,6 @@
           return '';
         };
 
-        const extractWeight = (h) => {
-          if (h.weight) return h.weight;
-          if (h.smart_tags && Array.isArray(h.smart_tags)) {
-            const t = h.smart_tags.find(x => typeof x === 'string' && x.includes('實際負磅:'));
-            if (t) { const m = t.match(/(\d+)/); if (m) return m[1]; }
-          }
-          return null;
-        };
-        
         const isCurrentPoolOpen = computed(() => {
           if (!selectedDate.value || selectedDate.value.startsWith('demo')) return false;
           try {
@@ -1038,6 +1029,15 @@
           return pNum;
         };
 
+        const extractWeight = (h) => {
+          if (h.weight) return h.weight;
+          if (h.smart_tags && Array.isArray(h.smart_tags)) {
+            const t = h.smart_tags.find(x => typeof x === 'string' && x.includes('實際負磅:'));
+            if (t) { const m = t.match(/(\d+)/); if (m) return m[1]; }
+          }
+          return null;
+        };
+
         const getTagClass = (tag) => {
           if (!tag) return 'bg-slate-100 text-slate-700 border border-slate-200';
           if (tag.includes('終極黃金狙擊') || tag.includes('正期望值') || tag.includes('Kelly')) return 'bg-amber-100 text-amber-900 font-black border border-amber-300';
@@ -1053,7 +1053,7 @@
         return {
           supabaseUrl, supabaseKey, showSettings, loading, noticeMsg,
           dates, selectedDate, currentDayRaces, currentRace, selectedRaceId,
-          predictions, saveSettings, loadRaces, selectDate, selectRace, loadDemoData, extractPlace,
+          predictions, saveSettings, loadRaces, selectDate, selectRace, loadDemoData, extractPlace, extractWeight,
           getTagClass, githubToken, githubRepo, syncingOdds, syncingCard, showSpeedMap, showBetPanel, raceBankroll, speedMapData, smartBettingPlan, formatJockey, formatTrainer, autoDetectedBiasBadges, isCurrentPoolOpen, filterValidTags, cleanStrategy, triggerRacecardUpdate, triggerLiveOddsSync
         };
       }
