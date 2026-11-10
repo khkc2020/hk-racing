@@ -270,8 +270,7 @@ def fetch_racecard_updates(target_date, venue, race_no):
                 elif "騎師" in h and "jk" not in h_idx: h_idx["jk"] = i
                 elif "練馬師" in h and "tr" not in h_idx: h_idx["tr"] = i
                 elif "檔位" in h and "dr" not in h_idx: h_idx["dr"] = i
-                elif "評分" in h and "rt" not in h_idx: h_idx["rt"] = i
-            if "no" not in h_idx or "name" not in h_idx:
+                elif "評分" in h and "國際" not in h and "+/-" not in h and "rt" not in h_idx: h_idx["rt"] = i
                 continue
             for tr in tb.find_all("tr")[1:]:
                 tds = [td.text.strip() for td in tr.find_all(["td", "th"])]
@@ -534,35 +533,47 @@ def sync_live_odds_and_ev():
                 item["predicted_rank"] = idx_r
                 item["bet_strategy"] = "🎯 獨贏首選 / 實力馬膽" if idx_r == 1 else ("⚡ 次選主力 / 黃金走位" if idx_r == 2 else ("🛡️ 連贏配腳 / 高爆發冷門" if idx_r <= 4 else ""))
             sb.table("race_predictions").delete().eq("race_id", race_id).execute()
-            sb.table("race_predictions").insert(clean_unopened).execute()
+            clean_unopened_db = [{k: v for k, v in row.items() if k != "weight"} for row in clean_unopened]
+            sb.table("race_predictions").insert(clean_unopened_db).execute()
             total_updated_horses += len(clean_unopened)
             print(f"  ✓ 第 {race_no} 場 [未開盤淨化完成]: 已清除舊盤污染並同步最新排位 ({len(clean_unopened)} 匹馬)")
             continue
 
-        # 3. 已開盤：抓取真實即時賠率 + Harville 位置概率 + 貝葉斯同日賽道偏差動態注入
+        # 3. 已開盤：抓取真實即時賠率 + 自動繼承清洗舊賠率
         odds_map = fetch_live_odds_fast(target_date, venue, race_no)
         if not odds_map:
-            print(f"  • 第 {race_no} 場: 暫未抓到即時賠率")
-            continue
+            # 若即時通道暫無回應，繼承並用 sanitize_wp_odds 清洗資料庫現存賠率 (踢走 128.0倍 等假數字)，絕不直接跳過更新！
+            for h in horses:
+                old_p = None
+                for ot in (h.get("smart_tags") or []):
+                    if "位置賠率:" in str(ot):
+                        m_op = re.search(r"(\d+(?:\.\d+)?)", str(ot))
+                        if m_op: old_p = float(m_op.group(1))
+                w_c, p_c = sanitize_wp_odds(h.get("market_odds"), old_p)
+                if w_c:
+                    odds_map[h["horse_no"]] = {"win": w_c, "pla": p_c}
 
         has_win = any(h["horse_no"] in odds_map and (odds_map[h["horse_no"]].get("win") or 0) > 1.0 for h in horses)
-        if not has_win:
-            continue
 
         num_places = 3 if len(horses) >= 7 else 2
-        win_implied = np.array([1.0 / max(float(odds_map.get(h["horse_no"], {}).get("win", 20.0) or 20.0), 1.01) for h in horses])
-        win_mkt_probs = (win_implied / win_implied.sum()) * 100.0
-        harville_pla_probs = compute_harville_place_probs(win_mkt_probs, num_places=num_places)
+        if has_win:
+            win_implied = np.array([1.0 / max(float(odds_map.get(h["horse_no"], {}).get("win", 20.0) or 20.0), 1.01) for h in horses])
+            win_mkt_probs = (win_implied / win_implied.sum()) * 100.0
+            harville_pla_probs = compute_harville_place_probs(win_mkt_probs, num_places=num_places)
 
-        has_pla = any(h["horse_no"] in odds_map and (odds_map[h["horse_no"]].get("pla") or 0) > 1.0 for h in horses)
-        if has_pla:
-            pla_implied = np.array([1.0 / max(float(odds_map.get(h["horse_no"], {}).get("pla", 5.0) or 5.0), 1.01) for h in horses])
-            pla_mkt_probs_300 = (pla_implied / pla_implied.sum()) * (num_places * 100.0)
-            pla_mkt_probs_100 = pla_mkt_probs_300 / float(num_places)
-            mkt_composite = 0.75 * win_mkt_probs + 0.25 * pla_mkt_probs_100
+            has_pla = any(h["horse_no"] in odds_map and (odds_map[h["horse_no"]].get("pla") or 0) > 1.0 for h in horses)
+            if has_pla:
+                pla_implied = np.array([1.0 / max(float(odds_map.get(h["horse_no"], {}).get("pla", 5.0) or 5.0), 1.01) for h in horses])
+                pla_mkt_probs_300 = (pla_implied / pla_implied.sum()) * (num_places * 100.0)
+                pla_mkt_probs_100 = pla_mkt_probs_300 / float(num_places)
+                mkt_composite = 0.75 * win_mkt_probs + 0.25 * pla_mkt_probs_100
+            else:
+                pla_mkt_probs_300 = harville_pla_probs
+                mkt_composite = win_mkt_probs
         else:
-            pla_mkt_probs_300 = harville_pla_probs
-            mkt_composite = win_mkt_probs
+            harville_pla_probs = np.zeros(len(horses))
+            pla_mkt_probs_300 = np.zeros(len(horses))
+            mkt_composite = np.zeros(len(horses))
 
         # 讀取基礎勝率並注入最新同日實時賽道偏差 (若該場尚未跑完)
         base_probs = np.array([float(h.get("win_probability") or 10.0) for h in horses])
@@ -607,7 +618,7 @@ def sync_live_odds_and_ev():
         safe_raw = np.clip(adj_raw_probs, 1e-3, 100.0)
         safe_mkt = np.clip(mkt_composite, 1e-3, 100.0)
         log_pooled = (safe_raw ** 0.80) * (safe_mkt ** 0.20)
-        final_probs = (log_pooled / log_pooled.sum()) * 100.0
+        final_probs = (( (safe_raw ** 0.80) * (safe_mkt ** 0.20) ) / ((safe_raw ** 0.80) * (safe_mkt ** 0.20)).sum() * 100.0) if has_win else adj_raw_probs)
 
         updated_payload = []
         for i, h in enumerate(horses):
@@ -673,6 +684,9 @@ def sync_live_odds_and_ev():
 
             if pla_odd:
                 tags.append(f"位置賠率: {pla_odd}倍")
+            if h.get("weight"):
+                tags = [t for t in tags if not str(t).startswith("實際負磅:")]
+                tags.append(f"實際負磅: {h['weight']}磅")
 
             safe_ev = round(max(-99.0, min(999.0, ev_pct)), 1)
             safe_odd = round(min(999.0, max(1.0, win_odd)), 1) if win_odd and win_odd > 1.0 else None
