@@ -992,31 +992,40 @@ def fetch_race_horses(date_hkjc, venue, race_no):
 
         h_idx = {}
         for i, h in enumerate(headers):
-            hl = h.lower().strip()
-            if ("馬匹編號" in h or "馬號" in h or hl == "no.") and "horse_no" not in h_idx:
+            h_clean = re.sub(r"\s+", "", str(h)).lower()
+            if ("馬匹編號" in h_clean or "馬號" in h_clean or "no." in h_clean) and "horse_no" not in h_idx:
                 h_idx["horse_no"] = i
-            elif "馬名" in h and "綵衣" not in h and "horse_name" not in h_idx:
+            elif ("馬名" in h_clean) and ("綵衣" not in h_clean) and "horse_name" not in h_idx:
                 h_idx["horse_name"] = i
-            elif "烙號" in h and "horse_code" not in h_idx:
+            elif ("烙號" in h_clean) and "horse_code" not in h_idx:
                 h_idx["horse_code"] = i
-            elif "負磅" in h and "+/-" not in h and "weight" not in h_idx:
+            elif ("負磅" in h_clean or "讓磅" in h_clean) and ("+/-" not in h_clean) and "weight" not in h_idx:
                 h_idx["weight"] = i
-            elif "騎師" in h and "jockey" not in h_idx:
+            elif ("騎師" in h_clean) and "jockey" not in h_idx:
                 h_idx["jockey"] = i
-            elif "檔位" in h and "draw" not in h_idx:
+            elif ("檔位" in h_clean) and "draw" not in h_idx:
                 h_idx["draw"] = i
-            elif "練馬師" in h and "trainer" not in h_idx:
+            elif ("練馬師" in h_clean) and "trainer" not in h_idx:
                 h_idx["trainer"] = i
-            elif "評分" in h and "國際" not in h and "+/-" not in h and "rating" not in h_idx:
+            elif ("評分" in h_clean) and ("國際" not in h_clean) and ("+/-" not in h_clean) and "rating" not in h_idx:
                 h_idx["rating"] = i
-            elif "配備" in h and "gear" not in h_idx:
+            elif ("配備" in h_clean) and "gear" not in h_idx:
                 h_idx["gear"] = i
-            elif ("排位體重" in h or "體重" in h) and "+/-" in h and "weight_diff" not in h_idx:
+            elif ("排位體重" in h_clean or "體重" in h_clean) and ("+/-" in h_clean) and "weight_diff" not in h_idx:
                 h_idx["weight_diff"] = i
-            elif "6次近績" in h or "近績" in h:
+            elif ("6次近績" in h_clean or "近績" in h_clean) and "form" not in h_idx:
                 h_idx["form"] = i
-            elif ("距今日數" in h or "休息" in h or "日數" in h) and "rest_days" not in h_idx:
+            elif ("距今日數" in h_clean or "休息" in h_clean or "日數" in h_clean) and "rest_days" not in h_idx:
                 h_idx["rest_days"] = i
+                
+        # 強制硬核後備方案 (Fallback to strict HKJC column indices if headers are completely messed up)
+        if "rating" not in h_idx and len(headers) >= 14: h_idx["rating"] = 12
+        if "weight" not in h_idx and len(headers) >= 8: h_idx["weight"] = 6
+        if "horse_no" not in h_idx and len(headers) >= 1: h_idx["horse_no"] = 0
+        if "horse_name" not in h_idx and len(headers) >= 5: h_idx["horse_name"] = 4
+        if "jockey" not in h_idx and len(headers) >= 8: h_idx["jockey"] = 7
+        if "trainer" not in h_idx and len(headers) >= 11: h_idx["trainer"] = 10
+        if "draw" not in h_idx and len(headers) >= 10: h_idx["draw"] = 9
 
         if "horse_no" not in h_idx or "horse_name" not in h_idx: continue
 
