@@ -264,13 +264,23 @@ def fetch_racecard_updates(target_date, venue, race_no):
             headers = [th.text.strip() for th in header_tr.find_all(["th", "td"])]
             h_idx = {}
             for i, h in enumerate(headers):
-                if ("馬匹編號" in h or "馬號" in h) and "no" not in h_idx: h_idx["no"] = i
-                elif "馬名" in h and "綵衣" not in h and "name" not in h_idx: h_idx["name"] = i
-                elif "負磅" in h and "+/-" not in h and "wt" not in h_idx: h_idx["wt"] = i
-                elif "騎師" in h and "jk" not in h_idx: h_idx["jk"] = i
-                elif "練馬師" in h and "tr" not in h_idx: h_idx["tr"] = i
-                elif "檔位" in h and "dr" not in h_idx: h_idx["dr"] = i
-                elif "評分" in h and "國際" not in h and "+/-" not in h and "rt" not in h_idx: h_idx["rt"] = i
+                h_clean = re.sub(r"\s+", "", str(h)).lower()
+                if ("馬匹編號" in h_clean or "馬號" in h_clean or "no." in h_clean) and "no" not in h_idx: h_idx["no"] = i
+                elif ("馬名" in h_clean) and ("綵衣" not in h_clean) and "name" not in h_idx: h_idx["name"] = i
+                elif ("負磅" in h_clean or "讓磅" in h_clean) and ("+/-" not in h_clean) and "wt" not in h_idx: h_idx["wt"] = i
+                elif ("騎師" in h_clean) and "jk" not in h_idx: h_idx["jk"] = i
+                elif ("練馬師" in h_clean) and "tr" not in h_idx: h_idx["tr"] = i
+                elif ("檔位" in h_clean) and "dr" not in h_idx: h_idx["dr"] = i
+                elif ("評分" in h_clean) and ("國際" not in h_clean) and ("+/-" not in h_clean) and "rt" not in h_idx: h_idx["rt"] = i
+            
+            # 強制硬核後備方案
+            if "rt" not in h_idx and len(headers) >= 14: h_idx["rt"] = 12
+            if "wt" not in h_idx and len(headers) >= 8: h_idx["wt"] = 6
+            if "no" not in h_idx and len(headers) >= 1: h_idx["no"] = 0
+            if "name" not in h_idx and len(headers) >= 5: h_idx["name"] = 4
+            if "jk" not in h_idx and len(headers) >= 8: h_idx["jk"] = 7
+            if "tr" not in h_idx and len(headers) >= 11: h_idx["tr"] = 10
+            if "dr" not in h_idx and len(headers) >= 10: h_idx["dr"] = 9
             if "no" not in h_idx or "name" not in h_idx:
                 continue
             for tr in tb.find_all("tr")[1:]:
