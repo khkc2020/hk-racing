@@ -489,8 +489,8 @@
                 <span v-if="!isCurrentPoolOpen && h.market_odds" class="text-slate-600 bg-slate-100 px-1.5 py-0.5 rounded border border-slate-200 text-[11px] font-semibold">
                   AI公允賠率: {{ h.market_odds }}倍
                 </span>
-                <span v-if="h.weight">•</span>
-                <span v-if="h.weight">負磅: <strong class="text-slate-700">{{ h.weight }}磅</strong></span>
+                <span v-if="extractWeight(h)">•</span>
+                <span v-if="extractWeight(h)">負磅: <strong class="text-slate-700">{{ extractWeight(h) }}磅</strong></span>
                 <span v-if="h.rest_days !== undefined && h.rest_days !== null">•</span>
                 <span v-if="h.rest_days !== undefined && h.rest_days !== null">休息: <strong class="text-slate-700">{{ h.rest_days === 0 ? '初出' : h.rest_days + '日' }}</strong></span>
                 <span>•</span>
@@ -890,6 +890,15 @@
           return '';
         };
 
+        const extractWeight = (h) => {
+          if (h.weight) return h.weight;
+          if (h.smart_tags && Array.isArray(h.smart_tags)) {
+            const t = h.smart_tags.find(x => typeof x === 'string' && x.includes('實際負磅:'));
+            if (t) { const m = t.match(/(\d+)/); if (m) return m[1]; }
+          }
+          return null;
+        };
+        
         const isCurrentPoolOpen = computed(() => {
           if (!selectedDate.value || selectedDate.value.startsWith('demo')) return false;
           try {
@@ -905,7 +914,7 @@
         const filterValidTags = (tags) => {
           if (!tags || !Array.isArray(tags)) return [];
           // 過濾掉內部儲存用的「位置賠率: X倍」文字標籤 (因上方已有藍色位置賠率徽章) 及異常(>99倍)數據
-          let cleaned = tags.filter(t => !String(t).includes('位置賠率:'));
+          let cleaned = tags.filter(t => !String(t).includes('位置賠率:') && !String(t).includes('實際負磅:'));
           // 防止同一匹馬同時出現「聰明錢落飛」與「資金冷卻回飛」矛盾標籤
           const hasDrop = cleaned.some(t => String(t).includes('聰明錢落飛'));
           const hasDrift = cleaned.some(t => String(t).includes('資金冷卻回飛'));
