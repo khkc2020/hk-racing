@@ -1055,7 +1055,6 @@ def fetch_race_horses(date_hkjc, venue, race_no):
                 r_m = re.search(r"\d+", tds[h_idx["rating"]])
                 if r_m: rt = int(r_m.group(0))
             if rt is None:
-                # 備用保護：若該欄為空白，按班次頂分與負磅自動推算合理評分
                 top_r = 105 if "一班" in race_class else (95 if "二班" in race_class else (80 if "三班" in race_class else (60 if "四班" in race_class else 40)))
                 rt = max(15, top_r - max(0, 135 - wt))
 
@@ -1714,8 +1713,8 @@ def run_upcoming():
 
             if pla_odd:
                 tags.append(f"位置賠率: {pla_odd}倍")
-            # 新增呢一行（將負磅存入隱藏標籤，保證前端 100% 顯示負磅）：
             if h.get("weight"):
+                tags = [t for t in tags if not str(t).startswith("實際負磅:")]
                 tags.append(f"實際負磅: {h['weight']}磅")
 
             safe_ev_pct = round(max(-99.0, min(999.0, ev_pct)), 1)
