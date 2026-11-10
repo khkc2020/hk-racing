@@ -271,6 +271,7 @@ def fetch_racecard_updates(target_date, venue, race_no):
                 elif "練馬師" in h and "tr" not in h_idx: h_idx["tr"] = i
                 elif "檔位" in h and "dr" not in h_idx: h_idx["dr"] = i
                 elif "評分" in h and "國際" not in h and "+/-" not in h and "rt" not in h_idx: h_idx["rt"] = i
+            if "no" not in h_idx or "name" not in h_idx:
                 continue
             for tr in tb.find_all("tr")[1:]:
                 tds = [td.text.strip() for td in tr.find_all(["td", "th"])]
@@ -506,6 +507,9 @@ def sync_live_odds_and_ev():
                     t for t in tags
                     if not any(kw in str(t) for kw in ["位置賠率", "正期望值", "建議注碼", "聰明錢", "大戶位置", "終極黃金狙擊", "回飛", "實時偏差"])
                 ]
+                if h.get("weight"):
+                    tags = [t for t in tags if not str(t).startswith("實際負磅:")]
+                    tags.append(f"實際負磅: {h['weight']}磅")
                 w_p_val = round(float(raw_probs[i]), 2)
                 fair_odd = round(min(99.0, max(1.5, 82.5 / max(w_p_val, 0.85))), 1)
                 clean_unopened.append({
@@ -533,16 +537,22 @@ def sync_live_odds_and_ev():
                 item["predicted_rank"] = idx_r
                 item["bet_strategy"] = "🎯 獨贏首選 / 實力馬膽" if idx_r == 1 else ("⚡ 次選主力 / 黃金走位" if idx_r == 2 else ("🛡️ 連贏配腳 / 高爆發冷門" if idx_r <= 4 else ""))
             sb.table("race_predictions").delete().eq("race_id", race_id).execute()
-            clean_unopened_db = [{k: v for k, v in row.items() if k != "weight"} for row in clean_unopened]
-            sb.table("race_predictions").insert(clean_unopened_db).execute()
+            clean_unopened_db = [{k: v for k, v in row.items() if k != "place_odds"} for row in clean_unopened]
+            try:
+                sb.table("race_predictions").insert(clean_unopened_db).execute()
+            except Exception as e:
+                err_s = str(e)
+                for opt_col in ["fast_gallop_count", "rest_days", "market_odds", "weight"]:
+                    if opt_col in err_s:
+                        clean_unopened_db = [{k: v for k, v in row.items() if k != opt_col} for row in clean_unopened_db]
+                sb.table("race_predictions").insert(clean_unopened_db).execute()
             total_updated_horses += len(clean_unopened)
             print(f"  ✓ 第 {race_no} 場 [未開盤淨化完成]: 已清除舊盤污染並同步最新排位 ({len(clean_unopened)} 匹馬)")
             continue
 
-        # 3. 已開盤：抓取真實即時賠率 + 自動繼承清洗舊賠率
+        # 3. 已開盤：抓取真實即時賠率 + 自動清洗舊盤污染
         odds_map = fetch_live_odds_fast(target_date, venue, race_no)
         if not odds_map:
-            # 若即時通道暫無回應，繼承並用 sanitize_wp_odds 清洗資料庫現存賠率 (踢走 128.0倍 等假數字)，絕不直接跳過更新！
             for h in horses:
                 old_p = None
                 for ot in (h.get("smart_tags") or []):
@@ -615,10 +625,13 @@ def sync_live_odds_and_ev():
             adj_raw_probs = (adj_raw_probs / adj_raw_probs.sum()) * 100.0
 
         # 對數線性概率池化校準 (Log-Linear Opinion Pooling)
-        safe_raw = np.clip(adj_raw_probs, 1e-3, 100.0)
-        safe_mkt = np.clip(mkt_composite, 1e-3, 100.0)
-        log_pooled = (safe_raw ** 0.80) * (safe_mkt ** 0.20)
-        final_probs = (( (safe_raw ** 0.80) * (safe_mkt ** 0.20) ) / ((safe_raw ** 0.80) * (safe_mkt ** 0.20)).sum() * 100.0) if has_win else adj_raw_probs)
+        if has_win:
+            safe_raw = np.clip(adj_raw_probs, 1e-3, 100.0)
+            safe_mkt = np.clip(mkt_composite, 1e-3, 100.0)
+            log_pooled = (safe_raw ** 0.80) * (safe_mkt ** 0.20)
+            final_probs = (log_pooled / log_pooled.sum()) * 100.0
+        else:
+            final_probs = adj_raw_probs
 
         updated_payload = []
         for i, h in enumerate(horses):
