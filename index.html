@@ -939,7 +939,7 @@
               headers: { 'Authorization': `Bearer ${githubToken.value.trim()}`, 'Accept': 'application/vnd.github.v3+json', 'Content-Type': 'application/json' },
               body: JSON.stringify({ ref: 'main' })
             });
-            setTimeout(() => { syncingCard.value = false; loadRaces(); noticeMsg.value = '✅ 排位更新已觸發！'; }, 4000);
+            setTimeout(() => { syncingCard.value = false; noticeMsg.value = '✅ 伺服器正在背景更新排位... 請於 1 分鐘後按【🔄 刷新】查看！'; }, 3000);
           } catch (e) { syncingCard.value = false; }
         };
 
@@ -955,7 +955,7 @@
               headers: { 'Authorization': `Bearer ${githubToken.value.trim()}`, 'Accept': 'application/vnd.github.v3+json', 'Content-Type': 'application/json' },
               body: JSON.stringify({ ref: 'main' })
             });
-            setTimeout(() => { syncingOdds.value = false; loadRaces(); noticeMsg.value = '⚡ 賠率秒刷已觸發！'; }, 4000);
+            setTimeout(() => { syncingOdds.value = false; noticeMsg.value = '⚡ 伺服器正在背景秒刷賠率... 請於 45 秒後按【🔄 刷新】查看！'; }, 3000);
           } catch (e) { syncingOdds.value = false; }
         };
 
