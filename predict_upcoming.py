@@ -1272,7 +1272,9 @@ def run_upcoming():
     for race_no in range(1, 12):
         meta, horses = fetch_race_horses(date_hkjc, venue, race_no)
         if not meta or not horses:
-            break
+            # 如果賽事取消或不存在，自動清空資料庫中的該場舊數據，並繼續處理下一場
+            sb_master.table("race_predictions").delete().eq("race_id", f"{target_date.replace('-', '')}_{venue}_{race_no:02d}").execute()
+            continue
 
         total_races += 1
         race_id = f"{target_date.replace('-', '')}_{venue}_{race_no:02d}"
