@@ -383,7 +383,7 @@ def evaluate_trackwork(text, jockey_name, target_date_str=None, last_race_date_s
         t_dt = tr["date"]
         if t_dt:
             if last_dt:
-                if t_dt > last_dt and t_dt <= target_dt:
+                if t_dt > last_dt and t_dt <= target_dt and (target_dt - t_dt).days <= 28:
                     valid_trials.append(tr)
             else:
                 if (target_dt - t_dt).days <= 28 and t_dt <= target_dt:
@@ -623,7 +623,6 @@ def evaluate_form_and_transition(horse_code, curr_meta, curr_horse, form_str, av
                 score += 0.12
                 tags.append("🔥 近期2捷以上")
             elif win_count == 0 and place_count >= 2:
-                # 絕妙的高階贏錢直覺：連續入位但未贏，評分未破頂，極具隱藏高EV！
                 score += 0.18
                 tags.append("💎 未勝連位馬 (評分未破頂高EV)")
     else:
@@ -667,7 +666,8 @@ def evaluate_form_and_transition(horse_code, curr_meta, curr_horse, form_str, av
                 except Exception:
                     pass
 
-            if last_race_date and target_date:
+            # 優先採用馬會排位表官方「距今日數」(curr_horse.get("rest_days"))，避免資料庫舊賽果覆蓋成錯誤的久休復出日數
+            if rest_days is None and last_race_date and target_date:
                 try:
                     from datetime import datetime
                     d_l = datetime.strptime(str(last_race_date), "%Y-%m-%d").date()
@@ -997,31 +997,40 @@ def fetch_race_horses(date_hkjc, venue, race_no):
 
         h_idx = {}
         for i, h in enumerate(headers):
-            hl = h.lower().strip()
-            if ("馬匹編號" in h or "馬號" in h or hl == "no.") and "horse_no" not in h_idx:
+            h_clean = re.sub(r"\s+", "", str(h)).lower()
+            if ("馬匹編號" in h_clean or "馬號" in h_clean or "no." in h_clean) and "horse_no" not in h_idx:
                 h_idx["horse_no"] = i
-            elif "馬名" in h and "綵衣" not in h and "horse_name" not in h_idx:
+            elif ("馬名" in h_clean) and ("綵衣" not in h_clean) and "horse_name" not in h_idx:
                 h_idx["horse_name"] = i
-            elif "烙號" in h and "horse_code" not in h_idx:
+            elif ("烙號" in h_clean) and "horse_code" not in h_idx:
                 h_idx["horse_code"] = i
-            elif "負磅" in h and "+/-" not in h and "weight" not in h_idx:
+            elif ("負磅" in h_clean or "讓磅" in h_clean) and ("+/-" not in h_clean) and "weight" not in h_idx:
                 h_idx["weight"] = i
-            elif "騎師" in h and "jockey" not in h_idx:
+            elif ("騎師" in h_clean) and "jockey" not in h_idx:
                 h_idx["jockey"] = i
-            elif "檔位" in h and "draw" not in h_idx:
+            elif ("檔位" in h_clean) and "draw" not in h_idx:
                 h_idx["draw"] = i
-            elif "練馬師" in h and "trainer" not in h_idx:
+            elif ("練馬師" in h_clean) and "trainer" not in h_idx:
                 h_idx["trainer"] = i
-            elif "評分" in h and "rating" not in h_idx:
+            elif ("評分" in h_clean) and ("國際" not in h_clean) and ("+/-" not in h_clean) and "rating" not in h_idx:
                 h_idx["rating"] = i
-            elif "配備" in h and "gear" not in h_idx:
+            elif ("配備" in h_clean) and "gear" not in h_idx:
                 h_idx["gear"] = i
-            elif ("排位體重" in h or "體重" in h) and "+/-" in h and "weight_diff" not in h_idx:
+            elif ("排位體重" in h_clean or "體重" in h_clean) and ("+/-" in h_clean) and "weight_diff" not in h_idx:
                 h_idx["weight_diff"] = i
-            elif "6次近績" in h or "近績" in h:
+            elif ("6次近績" in h_clean or "近績" in h_clean) and "form" not in h_idx:
                 h_idx["form"] = i
-            elif ("距今日數" in h or "休息" in h or "日數" in h) and "rest_days" not in h_idx:
+            elif ("距今日數" in h_clean or "休息" in h_clean or "日數" in h_clean) and "rest_days" not in h_idx:
                 h_idx["rest_days"] = i
+                
+        # 強制硬核後備方案 (Fallback to strict HKJC column indices if headers are completely messed up)
+        if "rating" not in h_idx and len(headers) >= 14: h_idx["rating"] = 12
+        if "weight" not in h_idx and len(headers) >= 8: h_idx["weight"] = 6
+        if "horse_no" not in h_idx and len(headers) >= 1: h_idx["horse_no"] = 0
+        if "horse_name" not in h_idx and len(headers) >= 5: h_idx["horse_name"] = 4
+        if "jockey" not in h_idx and len(headers) >= 8: h_idx["jockey"] = 7
+        if "trainer" not in h_idx and len(headers) >= 11: h_idx["trainer"] = 10
+        if "draw" not in h_idx and len(headers) >= 10: h_idx["draw"] = 9
 
         if "horse_no" not in h_idx or "horse_name" not in h_idx: continue
 
@@ -1055,10 +1064,13 @@ def fetch_race_horses(date_hkjc, venue, race_no):
                 if d_m: dr = int(d_m.group(0))
 
             tr_name = tds[h_idx["trainer"]] if "trainer" in h_idx and len(tds) > h_idx["trainer"] else ""
-            rt = 40
+            rt = None
             if "rating" in h_idx and len(tds) > h_idx["rating"]:
                 r_m = re.search(r"\d+", tds[h_idx["rating"]])
                 if r_m: rt = int(r_m.group(0))
+            if rt is None:
+                top_r = 105 if "一班" in race_class else (95 if "二班" in race_class else (80 if "三班" in race_class else (60 if "四班" in race_class else 40)))
+                rt = max(15, top_r - max(0, 135 - wt))
 
             gr = tds[h_idx["gear"]] if "gear" in h_idx and len(tds) > h_idx["gear"] else "-"
             form_val = tds[h_idx["form"]] if "form" in h_idx and len(tds) > h_idx["form"] else "-"
@@ -1265,7 +1277,11 @@ def run_upcoming():
     for race_no in range(1, 12):
         meta, horses = fetch_race_horses(date_hkjc, venue, race_no)
         if not meta or not horses:
-            break
+            try:
+                sb_master.table("race_predictions").delete().eq("race_id", f"{target_date.replace('-', '')}_{venue}_{race_no:02d}").execute()
+            except Exception:
+                pass
+            continue
 
         total_races += 1
         race_id = f"{target_date.replace('-', '')}_{venue}_{race_no:02d}"
@@ -1478,14 +1494,11 @@ def run_upcoming():
             h_tw_text = tw_map.get(h_no, "")
             tw_score, tw_tags, fg_count = evaluate_trackwork(h_tw_text, h["jockey"], target_date, last_race_date)
             h["fast_gallop_count"] = fg_count
-            
-            # 高階直覺組合技：試閘好 且 近績入位/連位
             has_good_trial = any("賽前試閘第1名" in str(t) or "賽前試閘第2名" in str(t) for t in tw_tags)
             has_good_form = any("上仗入位前三" in str(t) or "未勝連位馬" in str(t) or "上仗勝出頭馬" in str(t) for t in h_tags)
             if has_good_trial and has_good_form:
                 tw_score += 0.20
                 tw_tags.append("👑 狀態頂峰 (試閘好 + 近績好共振)")
-                
             pillar_4 = tw_score
             h_tags.extend(tw_tags)
 
@@ -1723,6 +1736,9 @@ def run_upcoming():
 
             if pla_odd:
                 tags.append(f"位置賠率: {pla_odd}倍")
+            if h.get("weight"):
+                tags = [t for t in tags if not str(t).startswith("實際負磅:")]
+                tags.append(f"實際負磅: {h['weight']}磅")
 
             safe_ev_pct = round(max(-99.0, min(999.0, ev_pct)), 1)
             safe_win_odd = round(min(999.0, max(1.0, win_odd)), 1) if win_odd and win_odd > 1.0 else None
