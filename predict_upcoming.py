@@ -472,6 +472,158 @@ def fetch_trackwork_text(date_hkjc, venue, race_no):
         pass
     return ""
 
+def parse_finish_time_to_sec_h2h(t_str):
+    if not t_str:
+        return None
+    s = str(t_str).strip().replace(":", ".")
+    parts = [p for p in s.split(".") if p.isdigit()]
+    try:
+        if len(parts) == 3:
+            return int(parts[0]) * 60.0 + int(parts[1]) + int(parts[2]) / 100.0
+        elif len(parts) == 2:
+            return int(parts[0]) + int(parts[1]) / 100.0
+    except Exception:
+        pass
+    return None
+
+def compute_h2h_formline_scores(horses, batch_history_map, target_date_str=None):
+    """
+    ⚔️ 同場賽駒上次對壘與磅位折算反先引擎 (Formline Head-to-Head Engine)
+    直接利用 Supabase 已載入之 race_results 歷史賽果，零額外爬蟲計算：
+    1. 同場交鋒壓制力：近 180 日內曾同場擊敗今仗多名對手之實力驗證。
+    2. 讓磅反先模型：若上次同場僅小負對手 (<=0.35秒)，但今仗一來一回受讓 >=5磅 (約2.7磅=1馬位=0.15秒)，自動觸發磅位反先加分！
+    """
+    from datetime import datetime, date
+    h2h_bonuses = {h["horse_no"]: 0.0 for h in horses}
+    h2h_tags = {h["horse_no"]: [] for h in horses}
+
+    try:
+        target_dt = datetime.strptime(str(target_date_str), "%Y-%m-%d").date() if target_date_str else date.today()
+    except Exception:
+        target_dt = date.today()
+
+    horse_by_code = {h["horse_code"]: h for h in horses if h.get("horse_code")}
+    meetings = {}
+
+    for hc, runs in (batch_history_map or {}).items():
+        if hc not in horse_by_code:
+            continue
+        for row in (runs or []):
+            rid = str(row.get("race_id") or "")
+            if not rid:
+                continue
+            r_date_str = row.get("race_date")
+            if not r_date_str and len(rid) >= 8 and rid[:8].isdigit():
+                r_date_str = f"{rid[:4]}-{rid[4:6]}-{rid[6:8]}"
+            days_ago = 60
+            if r_date_str:
+                try:
+                    r_dt = datetime.strptime(str(r_date_str), "%Y-%m-%d").date()
+                    days_ago = (target_dt - r_dt).days
+                except Exception:
+                    days_ago = 60
+            if days_ago < 0 or days_ago > 180:
+                continue
+            meetings.setdefault(rid, []).append((hc, row, days_ago))
+
+    # 統計每匹馬的淨交鋒表現與最大反先受讓磅數
+    beaten_rivals = {h["horse_no"]: set() for h in horses}
+    lost_to_rivals = {h["horse_no"]: set() for h in horses}
+    turnaround_best = {h["horse_no"]: (0.0, 0) for h in horses}  # (bonus, swing_lbs)
+
+    for rid, entries in meetings.items():
+        if len(entries) < 2:
+            continue
+        # 同場去重 (防止同一馬在同一場出現兩次)
+        uniq = {}
+        for hc, row, days_ago in entries:
+            if hc not in uniq:
+                uniq[hc] = (row, days_ago)
+        items = list(uniq.items())
+        if len(items) < 2:
+            continue
+
+        for i in range(len(items)):
+            hc_a, (row_a, days_a) = items[i]
+            h_a = horse_by_code[hc_a]
+            no_a = h_a["horse_no"]
+            try:
+                pl_a = int(str(row_a.get("place_num") or row_a.get("placing") or 99).strip())
+            except Exception:
+                pl_a = 99
+            if pl_a >= 90:
+                continue
+            sec_a = parse_finish_time_to_sec_h2h(row_a.get("finish_time_str"))
+            past_w_a = float(row_a.get("actual_weight") or h_a.get("weight") or 122.0)
+            curr_w_a = float(h_a.get("weight") or 122.0)
+
+            for j in range(i + 1, len(items)):
+                hc_b, (row_b, days_b) = items[j]
+                h_b = horse_by_code[hc_b]
+                no_b = h_b["horse_no"]
+                try:
+                    pl_b = int(str(row_b.get("place_num") or row_b.get("placing") or 99).strip())
+                except Exception:
+                    pl_b = 99
+                if pl_b >= 90 or pl_a == pl_b:
+                    continue
+                sec_b = parse_finish_time_to_sec_h2h(row_b.get("finish_time_str"))
+                past_w_b = float(row_b.get("actual_weight") or h_b.get("weight") or 122.0)
+                curr_w_b = float(h_b.get("weight") or 122.0)
+
+                recency_w = 1.0 if min(days_a, days_b) <= 90 else 0.65
+
+                if pl_a < pl_b:
+                    w_no, l_no = no_a, no_b
+                    w_past_wt, l_past_wt = past_w_a, past_w_b
+                    w_curr_wt, l_curr_wt = curr_w_a, curr_w_b
+                    time_gap = (sec_b - sec_a) if (sec_a and sec_b and sec_b >= sec_a) else ((pl_b - pl_a) * 0.14)
+                    pl_diff = pl_b - pl_a
+                else:
+                    w_no, l_no = no_b, no_a
+                    w_past_wt, l_past_wt = past_w_b, past_w_a
+                    w_curr_wt, l_curr_wt = curr_w_b, curr_w_a
+                    time_gap = (sec_a - sec_b) if (sec_a and sec_b and sec_a >= sec_b) else ((pl_a - pl_b) * 0.14)
+                    pl_diff = pl_a - pl_b
+
+                # 計算今仗對輸家的淨磅位優勢 (正數代表輸家今仗相對受讓更多磅)
+                swing_for_loser = (w_curr_wt - w_past_wt) - (l_curr_wt - l_past_wt)
+                # 約 2.7 磅 = 1 馬位 ≈ 0.15 秒
+                turnaround_sec = (swing_for_loser / 2.7) * 0.15
+
+                if swing_for_loser >= 5.0 and time_gap <= 0.35 and turnaround_sec >= (time_gap * 0.85):
+                    tb_score = round(min(0.14, (0.07 + (swing_for_loser - 5.0) * 0.012) * recency_w), 3)
+                    prev_b, prev_sw = turnaround_best[l_no]
+                    if tb_score > prev_b:
+                        turnaround_best[l_no] = (tb_score, int(round(swing_for_loser)))
+                else:
+                    beaten_rivals[w_no].add(l_no)
+                    lost_to_rivals[l_no].add(w_no)
+
+    for h in horses:
+        no = h["horse_no"]
+        n_beat = len(beaten_rivals[no])
+        n_lost = len(lost_to_rivals[no])
+        tb_score, tb_swing = turnaround_best[no]
+
+        bonus = 0.0
+        if n_beat >= 2 and n_beat > n_lost:
+            dom_bonus = min(0.14, 0.045 * (n_beat - n_lost) + 0.03)
+            bonus += dom_bonus
+            h2h_tags[no].append(f"⚔️ 同場交鋒強勢 (近仗曾勝{n_beat}匹對手)")
+        elif n_beat == 1 and n_lost == 0:
+            bonus += 0.04
+
+        if tb_score > 0:
+            bonus += tb_score
+            h2h_tags[no].append(f"⚖️ 交鋒磅位反先 (今仗受讓{tb_swing}磅)")
+        elif n_lost >= 2 and n_beat == 0:
+            bonus -= min(0.06, 0.025 * n_lost)
+
+        h2h_bonuses[no] = round(max(-0.08, min(0.20, bonus)), 3)
+
+    return h2h_bonuses, h2h_tags
+
 def evaluate_pace_and_style(h, past_record, past_runs_list=None, curr_dist=1200):
     runs_to_check = []
     if past_runs_list and isinstance(past_runs_list, list):
@@ -1403,6 +1555,8 @@ def run_upcoming():
             horse_styles[h_no] = st
             horse_late_bursts[h_no] = lb
 
+        h2h_bonuses_map, h2h_tags_map = compute_h2h_formline_scores(horses, batch_history_map, target_date_str=target_date)
+
         num_leaders = sum(1 for s in horse_styles.values() if s == "LEADER")
         num_prominent = sum(1 for s in horse_styles.values() if s == "PROMINENT")
         is_solo_lead = (num_leaders <= 1)
@@ -1683,6 +1837,10 @@ def run_upcoming():
                     intraday_bonus += round(active_bias["closer_boost"] * dist_closer_mult, 3)
                     h_tags.append(f"📡 AI實時偏差({conf_pct}%信度): 場地利後追衝刺")
 
+            h2h_bonus = h2h_bonuses_map.get(h_no, 0.0)
+            if h2h_tags_map.get(h_no):
+                h_tags.extend(h2h_tags_map[h_no])
+
             base_feature = (
                 (pillar_1 * 0.25) + 
                 (pillar_2 * 0.20) + 
@@ -1690,7 +1848,7 @@ def run_upcoming():
                 (pillar_4 * 0.15) + 
                 (pillar_5 * 0.10) + 
                 (pillar_6 * 0.10)
-            ) + pace_bonus + intraday_bonus
+            ) + pace_bonus + intraday_bonus + h2h_bonus
             mkt_flow = odds_velocity_bonus + wp_divergence_bonus
             total_feature = base_feature + mkt_flow
 
