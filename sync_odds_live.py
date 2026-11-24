@@ -82,8 +82,17 @@ def detect_intraday_track_bias(date_hkjc, venue):
             resp = requests.get(url, headers=HEADERS, timeout=5)
             if resp.status_code != 200 or "沒有相關資料" in resp.text:
                 break
+            resp.encoding = "utf-8"
             soup = BeautifulSoup(resp.text, "html.parser")
             race_txt = soup.get_text()
+            d_parts = date_hkjc.split("/")
+            if len(d_parts) == 3:
+                y_s, m_s, d_s = d_parts[0], d_parts[1], d_parts[2]
+                m_i, d_i = str(int(m_s)), str(int(d_s))
+                if not any(p in race_txt for p in (f"{d_s}/{m_s}/{y_s}", f"{d_i}/{m_i}/{y_s}", f"{y_s}/{m_s}/{d_s}", f"{y_s}年{m_i}月{d_i}日")):
+                    break
+            if f"第 {r_no} 場" not in race_txt and f"第{r_no}場" not in race_txt:
+                break
 
             perf_tb = None
             for tb in soup.find_all("table"):
@@ -496,9 +505,10 @@ def sync_live_odds_and_ev():
         # 1. 檢查排位表最新變動 (偵測取消賽事、剔除退出馬、更新易配騎師)
         active_rc, scratched_nos, is_cancelled = fetch_racecard_updates(target_date, venue, race_no)
         if is_cancelled:
-            print(f"  [🚫 賽事取消] 第 {race_no} 場已取消，自動清除資料庫舊預測與賠率！")
+            print(f"  [🚫 賽事取消] 第 {race_no} 場已取消，自動清除資料庫舊預測與場次！")
             try:
                 sb.table("race_predictions").delete().eq("race_id", race_id).execute()
+                sb.table("races").delete().eq("race_id", race_id).execute()
             except Exception:
                 pass
             continue
