@@ -39,14 +39,32 @@ def parse_finish_time_to_sec(t_str, dist=1200):
     return dist * 0.058
 
 
+def is_valid_result_page(page_text, date_slash, race_no):
+    """嚴格核對馬會賽果頁的真實日期與場次，防止馬會自動跳轉回上一次賽日或第1場"""
+    if not page_text or "名次" not in page_text or "沒有相關資料" in page_text:
+        return False
+    parts = date_slash.split("/")
+    if len(parts) == 3:
+        y, m, d = parts[0], parts[1], parts[2]
+        m_i, d_i = str(int(m)), str(int(d))
+        date_pats = [f"{d}/{m}/{y}", f"{d_i}/{m_i}/{y}", f"{y}/{m}/{d}", f"{y}年{m_i}月{d_i}日"]
+        if not any(p in page_text for p in date_pats):
+            return False
+    if f"第 {race_no} 場" not in page_text and f"第{race_no}場" not in page_text:
+        return False
+    return True
+
+
 def detect_venue_from_results(date_slash):
-    """自動探測指定賽日是沙田 (ST) 還是跑馬地 (HV)，若非賽日返回 None"""
+    """自動探測指定賽日是沙田 (ST) 還是跑馬地 (HV)，若非賽日或未開跑返回 None"""
     for v in ("ST", "HV"):
         url = f"https://racing.hkjc.com/racing/information/Chinese/Racing/LocalResults.aspx?RaceDate={date_slash}&Racecourse={v}&RaceNo=1"
         try:
             r = requests.get(url, headers=HEADERS, timeout=10)
-            if r.status_code == 200 and "名次" in r.text and "沒有相關資料" not in r.text:
-                return v
+            if r.status_code == 200:
+                r.encoding = "utf-8"
+                if is_valid_result_page(r.text, date_slash, 1):
+                    return v
         except Exception:
             continue
     return None
@@ -67,9 +85,11 @@ def archive_meeting(date_hyphen):
 
         try:
             resp_res = requests.get(res_url, headers=HEADERS, timeout=10)
-            if resp_res.status_code != 200 or "名次" not in resp_res.text or "沒有相關資料" in resp_res.text:
+            if resp_res.status_code != 200:
                 continue
             resp_res.encoding = "utf-8"
+            if not is_valid_result_page(resp_res.text, date_slash, race_no):
+                continue
             soup_r = BeautifulSoup(resp_res.text, "html.parser")
             race_text = soup_r.get_text()
 
