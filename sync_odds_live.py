@@ -247,16 +247,20 @@ def get_shared_driver():
         return None
 
 def fetch_racecard_updates(target_date, venue, race_no):
-    """快速檢查排位表最新變動：退出馬、臨時易配騎師、最新負磅"""
+    """快速檢查排位表最新變動：賽事取消、退出馬、臨時易配騎師、最新負磅"""
     date_slash = target_date.replace("-", "/")
     url = f"https://racing.hkjc.com/racing/information/Chinese/Racing/RaceCard.aspx?RaceDate={date_slash}&Racecourse={venue}&RaceNo={race_no}"
     active_horses = {}
     scratched_nos = set()
+    is_cancelled = False
     try:
         r = requests.get(url, headers=HEADERS, timeout=6)
         if r.status_code != 200:
-            return active_horses, scratched_nos
+            return active_horses, scratched_nos, is_cancelled
         soup = BeautifulSoup(r.text, "html.parser")
+        page_txt = soup.get_text()
+        if "沒有相關賽事" in page_txt or "賽事取消" in page_txt:
+            return active_horses, scratched_nos, True
         for tb in soup.find_all("table"):
             header_tr = tb.find("tr")
             if not header_tr:
@@ -309,7 +313,7 @@ def fetch_racecard_updates(target_date, venue, race_no):
                 }
     except Exception:
         pass
-    return active_horses, scratched_nos
+    return active_horses, scratched_nos, is_cancelled
 
 def sanitize_wp_odds(win_val, pla_val):
     """
@@ -489,8 +493,15 @@ def sync_live_odds_and_ev():
         cat_key = "AWT" if is_awt else ("TURF_STRAIGHT" if is_st_straight else "TURF_TURN")
         active_bias = intraday_bias.get(cat_key) or {}
 
-        # 1. 檢查排位表最新變動 (剔除退出馬、更新易配騎師)
-        active_rc, scratched_nos = fetch_racecard_updates(target_date, venue, race_no)
+        # 1. 檢查排位表最新變動 (偵測取消賽事、剔除退出馬、更新易配騎師)
+        active_rc, scratched_nos, is_cancelled = fetch_racecard_updates(target_date, venue, race_no)
+        if is_cancelled:
+            print(f"  [🚫 賽事取消] 第 {race_no} 場已取消，自動清除資料庫舊預測與賠率！")
+            try:
+                sb.table("race_predictions").delete().eq("race_id", race_id).execute()
+            except Exception:
+                pass
+            continue
         if scratched_nos:
             print(f"  [🚨 退出馬剔除] 第 {race_no} 場偵測到退出馬號: {sorted(list(scratched_nos))}")
             horses = [h for h in horses if h["horse_no"] not in scratched_nos]
