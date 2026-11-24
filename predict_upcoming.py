@@ -798,12 +798,22 @@ def evaluate_form_and_transition(horse_code, curr_meta, curr_horse, form_str, av
             last_race_date = last.get("race_date")
             inc_rep = str(last.get("incident_report") or "")
             trouble_kws = ["受困而未能望空", "未能望空", "勒避", "走外疊", "沒有遮擋", "無遮擋", "出閘笨拙", "碰撞", "失去平衡", "嚴重受阻", "受擠迫", "受阻礙", "難以望空", "被帶出外疊", "被迫走外疊"]
-            if any(kw in inc_rep for kw in trouble_kws):
+            health_red_kws = ["流鼻血", "心律不正常", "氣管內有很多血", "氣管內有大量血液", "不良於行", "跛行", "呼吸有雜音", "喉部異常"]
+            manner_red_kws = ["搶口", "難以穩定走勢", "嚴重外斜", "嚴重內閃", "直路外斜", "直路內閃", "閘內煩躁", "表現令人失望"]
+
+            if any(kw in inc_rep for kw in health_red_kws):
+                score -= 0.22
+                tags.append("🏥 上仗健康異常 (慎防狀態未復)")
+            elif any(kw in inc_rep for kw in trouble_kws):
                 try: p_num = int(last.get("place_num") or 99)
                 except: p_num = 99
                 if p_num <= 8:
                     score += 0.18
                     tags.append("🚧 上仗受阻/走外疊蝕位 (隱形實力馬)")
+
+            if any(kw in inc_rep for kw in manner_red_kws):
+                score -= 0.08
+                tags.append("⚠️ 上仗搶口/走規欠佳")
 
             l400 = last.get("last_400m_sec")
             if l400:
