@@ -1,21 +1,26 @@
 import os
 import re
-import time
 import smtplib
 import requests
+from datetime import datetime, timedelta, timezone
 from bs4 import BeautifulSoup
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 from supabase import create_client
 
 SUPABASE_URL = os.environ.get("SUPABASE_URL", "https://rxmkohhgznfcnhdqegwq.supabase.co")
-SUPABASE_KEY = os.environ.get("SUPABASE_KEY", "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InJ4bWtvaGhnem5mY25oZHFlZ3dxIiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc5MDQ5OTk2OCwiZXhwIjoyMTA2MDc1OTY4fQ.QUqbXyvQuVuulKbiaI0jC20aUw21l1vd4pjXWEryjuI")
+SUPABASE_KEY = os.environ.get("SUPABASE_KEY", "")
+
+if not SUPABASE_KEY:
+    raise RuntimeError("缺少環境變數 SUPABASE_KEY，請於 GitHub Secrets 設定。")
+
 supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
 
 EMAIL_TO = os.environ.get("EMAIL_TO", "bluecastlefc@yahoo.com.hk")
 EMAIL_USER = os.environ.get("EMAIL_USER")
 EMAIL_PASS = os.environ.get("EMAIL_PASS")
 EMAIL_HOST = os.environ.get("EMAIL_HOST", "smtp.gmail.com")
+
 
 def send_email(subject, html_content):
     if not EMAIL_USER or not EMAIL_PASS:
@@ -35,8 +40,10 @@ def send_email(subject, html_content):
     except Exception as e:
         print(f"郵件發送失敗: {e}")
 
+
 def run_review():
-    today = time.strftime("%Y-%m-%d")
+    hkt = timezone(timedelta(hours=8))
+    today = datetime.now(hkt).strftime("%Y-%m-%d")
     today_clean = today.replace("-", "")
     res = supabase.table("race_predictions").select("*").ilike("race_id", f"{today_clean}%").execute()
     if not res.data:
@@ -58,22 +65,26 @@ def run_review():
             resp = requests.get(url, headers={"User-Agent": "Mozilla/5.0"}, timeout=10)
             soup = BeautifulSoup(resp.text, "html.parser")
             tbl = soup.find("table", class_="f_tac")
-            if not tbl: continue
-            
+            if not tbl:
+                continue
+
             top3 = []
             for row in tbl.find_all("tr"):
                 tds = [td.get_text().strip() for td in row.find_all("td")]
                 if len(tds) > 3 and tds[0] in ("1", "2", "3"):
                     cm = re.search(r"\(([A-Z0-9]+)\)", tds[2])
-                    if cm: top3.append((tds[0], cm.group(1)))
+                    if cm:
+                        top3.append((tds[0], cm.group(1)))
 
             horses.sort(key=lambda x: x.get("predicted_rank", 99))
             top_pick = horses[0]["horse_code"] if horses else None
 
             is_win = any(pos == "1" and code == top_pick for pos, code in top3)
             is_place = any(code == top_pick for _, code in top3)
-            if is_win: win_hits += 1
-            if is_place: place_hits += 1
+            if is_win:
+                win_hits += 1
+            if is_place:
+                place_hits += 1
 
             html += f"<li>第 {r_no} 場 - 首選: {horses[0]['horse_name']} | 獨贏: {'✅ 命中' if is_win else '❌'} | 位置: {'✅ 命中' if is_place else '❌'}</li>"
         except Exception:
@@ -82,8 +93,9 @@ def run_review():
     win_rate = round((win_hits / total_races) * 100, 1) if total_races else 0
     place_rate = round((place_hits / total_races) * 100, 1) if total_races else 0
     html += f"</ul><h3>📊 總結：獨贏命中率 {win_rate}% | 前三名上名率 {place_rate}%</h3>"
-    
+
     send_email(f"📈 【賽後戰報】{today} 賽馬 AI 複盤與命中統計", html)
+
 
 if __name__ == "__main__":
     run_review()
