@@ -977,6 +977,8 @@ def fetch_race_horses(date_hkjc, venue, race_no):
 
     if "沒有相關賽事" in race_text or "賽事取消" in race_text:
         return None, []
+    if f"第 {race_no} 場" not in race_text and f"第{race_no}場" not in race_text:
+        return None, []
 
     dist_m = re.search(r"(\d{3,4})\s*米", race_text)
     distance = int(dist_m.group(1)) if dist_m else 1200
@@ -1112,8 +1114,17 @@ def detect_intraday_track_bias(date_hkjc, venue):
             resp = requests.get(url, headers=HEADERS, timeout=6)
             if resp.status_code != 200 or "沒有相關資料" in resp.text:
                 break
+            resp.encoding = "utf-8"
             soup = BeautifulSoup(resp.text, "html.parser")
             race_txt = soup.get_text()
+            d_parts = date_hkjc.split("/")
+            if len(d_parts) == 3:
+                y_s, m_s, d_s = d_parts[0], d_parts[1], d_parts[2]
+                m_i, d_i = str(int(m_s)), str(int(d_s))
+                if not any(p in race_txt for p in (f"{d_s}/{m_s}/{y_s}", f"{d_i}/{m_i}/{y_s}", f"{y_s}/{m_s}/{d_s}", f"{y_s}年{m_i}月{d_i}日")):
+                    break
+            if f"第 {r_no} 場" not in race_txt and f"第{r_no}場" not in race_txt:
+                break
 
             perf_tb = None
             for tb in soup.find_all("table"):
@@ -1274,11 +1285,13 @@ def run_upcoming():
     except Exception as e:
         print(f"  [提示] 載入 races 緩存: {e}")
 
-    for race_no in range(1, 12):
+    for race_no in range(1, 13):
         meta, horses = fetch_race_horses(date_hkjc, venue, race_no)
         if not meta or not horses:
+            del_rid = f"{target_date.replace('-', '')}_{venue}_{race_no:02d}"
             try:
-                sb_master.table("race_predictions").delete().eq("race_id", f"{target_date.replace('-', '')}_{venue}_{race_no:02d}").execute()
+                sb_master.table("race_predictions").delete().eq("race_id", del_rid).execute()
+                sb_master.table("races").delete().eq("race_id", del_rid).execute()
             except Exception:
                 pass
             continue
