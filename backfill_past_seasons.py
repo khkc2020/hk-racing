@@ -6,8 +6,8 @@ from datetime import datetime, timedelta
 from bs4 import BeautifulSoup
 from supabase import create_client
 
-SUPABASE_URL = "https://rxmkohhgznfcnhdqegwq.supabase.co"
-SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InJ4bWtvaGhnem5mY25oZHFlZ3dxIiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc5MDQ5OTk2OCwiZXhwIjoyMTA2MDc1OTY4fQ.QUqbXyvQuVuulKbiaI0jC20aUw21l1vd4pjXWEryjuI"
+SUPABASE_URL = os.environ.get("SUPABASE_URL", "https://rxmkohhgznfcnhdqegwq.supabase.co")
+SUPABASE_KEY = os.environ.get("SUPABASE_KEY", "")
 supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
 
 HEADERS = {
@@ -191,7 +191,7 @@ def run_season_backfill():
     print("=== 香港賽馬 歷史賽季全量大數據自動歸檔 ===")
     # 自動遍歷 2024/25 及 2025/26 兩大馬季 (2024年9月 至 2026年7月)
     start_date = datetime(2024, 9, 1)
-    end_date = datetime(2026, 7, 20)
+    end_date = datetime.now()
 
     total_meetings = 0
     total_races = 0
@@ -201,7 +201,7 @@ def run_season_backfill():
         # 跳過每年 7月中至8月底暑期休賽期
         if not (curr.month == 7 and curr.day > 18) and not (curr.month == 8):
             # 週三 (跑馬地夜賽) 或 週日 (沙田日賽)
-            if curr.weekday() in (2, 6):
+            if curr.weekday() in (2, 5, 6):
                 venue = "HV" if curr.weekday() == 2 else "ST"
                 d_slash = curr.strftime("%Y/%m/%d")
                 d_hyphen = curr.strftime("%Y-%m-%d")
